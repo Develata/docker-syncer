@@ -78,7 +78,10 @@
   * **手动触发**：点击 Run workflow 手动运行。
 * **手动触发参数**：
   * `force_sync`: (可选) 勾选则跳过摘要比对，强制同步所有镜像。
-* **配置方式**：修改仓库根目录的 `images.txt`。
+* **配置方式**：
+  * **镜像列表**：修改仓库根目录的 `images.txt`。
+  * **同步配置**：修改仓库根目录的 `config.env`。
+    * `SYNC_MODE`: 默认同步模式 (可选 `aliyun`, `ghcr`, `double`, `none`, 默认为 `none` 防止误触)。
 
 **`images.txt` 语法示例：**
 
