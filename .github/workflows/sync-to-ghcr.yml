@@ -4,18 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       image_name:
-        description: '原镜像名称 (例如: mysql:8.0)'
+        description: "原镜像名称 (例如: mysql:8.0)"
         required: true
-        default: 'nginx:alpine'
+        default: "nginx:alpine"
       target_name:
-        description: '保存名称 (留空则自动处理)'
+        description: "保存名称 (留空则自动处理)"
         required: false
       platform:
-        description: '指定架构 (例如: linux/arm64，留空默认 amd64)'
+        description: "指定架构 (例如: linux/arm64，留空默认 amd64)"
         required: false
-        default: ''
+        default: ""
       force_sync:
-        description: '强制同步 (跳过摘要比对)'
+        description: "强制同步 (跳过摘要比对)"
         type: boolean
         required: false
         default: false
@@ -37,10 +37,10 @@ jobs:
         with:
           root-reserve-mb: 2048
           swap-size-mb: 128
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          build-mount-path: '/var/lib/docker/'
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+          build-mount-path: "/var/lib/docker/"
 
       - name: 重启 Docker
         run: sudo service docker restart
@@ -50,7 +50,7 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-        continue-on-error: true 
+        continue-on-error: true
 
       - name: 登录 GHCR
         uses: docker/login-action@v2
@@ -60,34 +60,58 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 拉取、重命名并推送
+        env:
+          INPUT_IMAGE: ${{ inputs.image_name }}
+          INPUT_TARGET: ${{ inputs.target_name }}
+          INPUT_PLATFORM: ${{ inputs.platform }}
+          INPUT_FORCE: ${{ inputs.force_sync }}
         run: |
+          # Define retry function
+          function retry {
+            local n=1
+            local max=3
+            local delay=5
+            while true; do
+              "$@" && break || {
+                if [[ $n -lt $max ]]; then
+                  ((n++))
+                  echo "⚠️ Command failed. Attempt $n/$max:"
+                  sleep $delay;
+                else
+                  echo "❌ The command has failed after $max attempts."
+                  return 1
+                fi
+              }
+            done
+          }
+
           # --- 1. 变量准备 ---
-          SRC_IMAGE="${{ inputs.image_name }}"
+          SRC_IMAGE="$INPUT_IMAGE"
           PLATFORM_ARG=""
-          
+
           # 默认架构参数
           SKOPEO_OS="linux"
           SKOPEO_ARCH="amd64"
 
-          if [ -n "${{ inputs.platform }}" ]; then
-            PLATFORM_ARG="--platform ${{ inputs.platform }}"
-            echo "⚙️ 指定架构: ${{ inputs.platform }}"
+          if [ -n "$INPUT_PLATFORM" ]; then
+            PLATFORM_ARG="--platform $INPUT_PLATFORM"
+            echo "⚙️ 指定架构: $INPUT_PLATFORM"
             
             # 解析 platform
-            if [[ "${{ inputs.platform }}" == *"/"* ]]; then
-               SKOPEO_OS=$(echo "${{ inputs.platform }}" | awk -F'/' '{print $1}')
-               SKOPEO_ARCH=$(echo "${{ inputs.platform }}" | awk -F'/' '{print $2}')
+            if [[ "$INPUT_PLATFORM" == *"/"* ]]; then
+               SKOPEO_OS=$(echo "$INPUT_PLATFORM" | awk -F'/' '{print $1}')
+               SKOPEO_ARCH=$(echo "$INPUT_PLATFORM" | awk -F'/' '{print $2}')
             else
-               SKOPEO_ARCH="${{ inputs.platform }}"
+               SKOPEO_ARCH="$INPUT_PLATFORM"
             fi
           fi
-          
+
           # 构造 Skopeo 参数
           SKOPEO_FLAGS="--override-os $SKOPEO_OS --override-arch $SKOPEO_ARCH"
 
           # --- 2. 目标名称计算 (智能前缀) ---
-          if [ -n "${{ inputs.target_name }}" ]; then
-            TARGET_TAG="${{ inputs.target_name }}"
+          if [ -n "$INPUT_TARGET" ]; then
+            TARGET_TAG="$INPUT_TARGET"
           else
              SCOPE=$(echo "$SRC_IMAGE" | awk -F'/' '{if (NF>2) print $(NF-1); else if (NF==2 && $1!="library") print $1; else print ""}')
              BASE_NAME=$(echo "$SRC_IMAGE" | awk -F'/' '{print $NF}')
@@ -98,8 +122,8 @@ jobs:
                 TARGET_TAG="${BASE_NAME}"
              fi
              
-             if [ -n "${{ inputs.platform }}" ]; then
-                PLAT_PREFIX=$(echo "${{ inputs.platform }}" | sed 's/\//_/g')
+             if [ -n "$INPUT_PLATFORM" ]; then
+                PLAT_PREFIX=$(echo "$INPUT_PLATFORM" | sed 's/\//_/g')
                 TARGET_TAG="${PLAT_PREFIX}_${TARGET_TAG}"
              fi
           fi
@@ -108,15 +132,15 @@ jobs:
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           TARGET_TAG=$(echo "$TARGET_TAG" | tr '[:upper:]' '[:lower:]')
           FULL_TARGET="${{ env.REGISTRY }}/$OWNER/$TARGET_TAG"
-          
+
           echo "🎯 目标镜像地址: $FULL_TARGET"
 
           # --- 4. 智能摘要比对 ---
           NEED_SYNC=true
-          if [ "${{ inputs.force_sync }}" == "false" ]; then
+          if [ "$INPUT_FORCE" == "false" ]; then
              echo "🔍 检查 Digest..."
-             SRC_DIGEST=$(skopeo inspect $SKOPEO_FLAGS docker://$SRC_IMAGE --format='{{.Digest}}' 2>/dev/null || echo "")
-             DEST_DIGEST=$(skopeo inspect $SKOPEO_FLAGS docker://$FULL_TARGET --format='{{.Digest}}' 2>/dev/null || echo "")
+             SRC_DIGEST=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$SRC_IMAGE" --format='{{.Digest}}' 2>/dev/null || echo "")
+             DEST_DIGEST=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$FULL_TARGET" --format='{{.Digest}}' 2>/dev/null || echo "")
              
              if [ -n "$SRC_DIGEST" ] && [ "$SRC_DIGEST" == "$DEST_DIGEST" ]; then
                 echo "✅ 摘要一致 ($SRC_DIGEST)，无需同步。"
@@ -127,13 +151,13 @@ jobs:
           # --- 5. 执行同步 ---
           if [ "$NEED_SYNC" == "true" ]; then
              echo "📥 拉取: $SRC_IMAGE"
-             docker pull $SRC_IMAGE $PLATFORM_ARG
+             retry docker pull "$SRC_IMAGE" $PLATFORM_ARG
 
              echo "🏷️ 打标签: $FULL_TARGET"
              docker tag $SRC_IMAGE $FULL_TARGET
 
              echo "📤 推送: $FULL_TARGET"
-             docker push $FULL_TARGET
+             retry docker push "$FULL_TARGET"
              
              echo "🧹 清理..."
              docker rmi $SRC_IMAGE $FULL_TARGET || true

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       force_sync:
-        description: '强制同步 (跳过摘要比对)'
+        description: "强制同步 (跳过摘要比对)"
         required: false
         type: boolean
         default: false
@@ -24,11 +24,11 @@ jobs:
         with:
           root-reserve-mb: 2048
           swap-size-mb: 128
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          build-mount-path: '/var/lib/docker/'
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+          remove-codeql: "true"
+          build-mount-path: "/var/lib/docker/"
 
       - name: 重启 Docker 服务
         run: sudo service docker restart
@@ -52,93 +52,138 @@ jobs:
 
       - name: 📦 批量处理镜像
         run: |
+          # 定义重试函数
+          function retry {
+            local n=1
+            local max=3
+            local delay=5
+            while true; do
+              "$@" && break || {
+                if [[ $n -lt $max ]]; then
+                  ((n++))
+                  echo "⚠️ 命令失败，偿试第 $n/$max 次重试..."
+                  sleep $delay;
+                else
+                  echo "❌ 命令在 $max 次尝试后失败。"
+                  return 1
+                fi
+              }
+            done
+          }
+
           if [ ! -f "images.txt" ]; then
             echo "❌ images.txt 不存在。"
             exit 0
           fi
 
-          echo "📋 开始处理..."
-          
+          echo "📋 开始批量处理..."
+
           while IFS= read -r line || [ -n "$line" ]; do
+            # 去除首尾空白
             line=$(echo "$line" | xargs)
+            # 跳过空行和注释
             [[ -z "$line" || "$line" =~ ^# ]] && continue
 
             echo "----------------------------------------"
-            echo "🔄 指令: $line"
+            echo "🔄 处理指令: $line"
 
             # 1. 解析参数
             PLATFORM_ARG=""
             SKOPEO_OS="linux"
             SKOPEO_ARCH="amd64"
             
-            if [[ "$line" == *"--platform"* ]]; then
-              PLATFORM_VAL=$(echo "$line" | grep -oP '(?<=--platform[ =])\S+')
-              if [ -n "$PLATFORM_VAL" ]; then
-                 PLATFORM_ARG="--platform $PLATFORM_VAL"
-                 echo "⚙️ 架构: $PLATFORM_VAL"
+            # 使用更健壮的正则匹配 platform
+            if [[ "$line" =~ --platform[=\ ]([^ ]+) ]]; then
+              PLATFORM_VAL="${BASH_REMATCH[1]}"
+              PLATFORM_ARG="--platform $PLATFORM_VAL"
+              echo "⚙️  指定架构: $PLATFORM_VAL"
                  
-                 if [[ "$PLATFORM_VAL" == *"/"* ]]; then
-                    SKOPEO_OS=$(echo "$PLATFORM_VAL" | awk -F'/' '{print $1}')
-                    SKOPEO_ARCH=$(echo "$PLATFORM_VAL" | awk -F'/' '{print $2}')
-                 else
-                    SKOPEO_ARCH="$PLATFORM_VAL"
-                 fi
+              if [[ "$PLATFORM_VAL" == *"/"* ]]; then
+                SKOPEO_OS=$(echo "$PLATFORM_VAL" | cut -d'/' -f1)
+                SKOPEO_ARCH=$(echo "$PLATFORM_VAL" | cut -d'/' -f2)
+              else
+                SKOPEO_ARCH="$PLATFORM_VAL"
               fi
             fi
             
             SKOPEO_FLAGS="--override-os $SKOPEO_OS --override-arch $SKOPEO_ARCH"
 
+            # 提取镜像名（移除参数部分）
             SRC_IMAGE=$(echo "$line" | awk '{print $NF}')
             
-            # 2. 命名处理
-            SCOPE=$(echo "$SRC_IMAGE" | awk -F'/' '{if (NF>2) print $(NF-1); else if (NF==2 && $1!="library") print $1; else print ""}')
-            BASE_NAME=$(echo "$SRC_IMAGE" | awk -F'/' '{print $NF}')
+            # 2. 命名处理 (Smart Naming)
+            # 提取 Scope (namespace) 和 Basename
+            # Logic: bitnami/redis -> Scope: bitnami, Base: redis
+            #        redis -> Scope: "", Base: redis
+            #        library/redis -> Scope: "", Base: redis
+            
+            SCOPE=""
+            BASE_NAME=$(basename "$SRC_IMAGE" | cut -d':' -f1)
+            TAG_NAME=$(echo "$SRC_IMAGE" | cut -d':' -f2 -s)
+            [ -z "$TAG_NAME" ] && TAG_NAME="latest"
+            
+            # 简单解析 namespace
+            if [[ "$SRC_IMAGE" == *"/"* ]]; then
+                NAMESPACE_PART=$(dirname "$SRC_IMAGE")
+                if [[ "$NAMESPACE_PART" != "library" && "$NAMESPACE_PART" != "." ]]; then
+                   SCOPE=$(basename "$NAMESPACE_PART")
+                fi
+            fi
             
             if [ -n "$SCOPE" ]; then
-               TARGET_TAG="${SCOPE}_${BASE_NAME}"
+               TARGET_TAG="${SCOPE}_${BASE_NAME}:${TAG_NAME}"
             else
-               TARGET_TAG="${BASE_NAME}"
+               TARGET_TAG="${BASE_NAME}:${TAG_NAME}"
             fi
             
+            # 多架构前缀追加
             if [ -n "$PLATFORM_VAL" ]; then
-               PLATFORM_TAG=$(echo "$PLATFORM_VAL" | sed 's/\//_/g')
-               TARGET_TAG="${PLATFORM_TAG}_${TARGET_TAG}"
+               PLATFORM_PREFIX=$(echo "$PLATFORM_VAL" | sed 's/\//_/g')
+               TARGET_TAG="${PLATFORM_PREFIX}_${TARGET_TAG}"
             fi
 
-            ALI_TARGET="$ALIYUN_REGISTRY/$ALIYUN_NAMESPACE/$TARGET_TAG"
+            ALI_TARGET="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/$TARGET_TAG"
             
             # 3. 摘要比对
             FORCE="${{ inputs.force_sync }}"
             NEED_PULL=true
 
-            if [ "$FORCE" == "false" ]; then
+            if [ "$FORCE" != "true" ]; then
                echo "🔍 比对 Digest ($SKOPEO_ARCH)..."
-               SRC_DIGEST=$(skopeo inspect $SKOPEO_FLAGS docker://$SRC_IMAGE --format='{{.Digest}}' 2>/dev/null || echo "")
-               DEST_DIGEST=$(skopeo inspect $SKOPEO_FLAGS docker://$ALI_TARGET --format='{{.Digest}}' 2>/dev/null || echo "")
+               # 增加特定 retry 避免网络抖动误判
+               SRC_DIGEST=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$SRC_IMAGE" --format='{{.Digest}}' 2>/dev/null || echo "")
+               DEST_DIGEST=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$ALI_TARGET" --format='{{.Digest}}' 2>/dev/null || echo "")
                
                if [ -n "$SRC_DIGEST" ] && [ "$SRC_DIGEST" == "$DEST_DIGEST" ]; then
-                  echo "✅ 镜像最新，跳过。"
+                  echo "✅ 镜像与源端一致 ($SRC_DIGEST)，跳过。"
                   NEED_PULL=false
                else
-                  echo "🚀 需要同步。"
+                  if [ -z "$SRC_DIGEST" ]; then
+                    echo "⚠️ 无法获取源镜像摘要，可能不存在或网络问题。"
+                  fi
+                  echo "🚀 摘要不一致或目标不存在，准备同步。"
                fi
             else
-               echo "⚠️ 强制同步。"
+               echo "⚠️ 强制模式，跳过比对。"
             fi
 
-            # 4. 执行
+            # 4. 执行同步
             if [ "$NEED_PULL" == "true" ]; then
-               echo "📥 拉取..."
-               docker pull $SRC_IMAGE $PLATFORM_ARG
+               echo "📥 拉取 $SRC_IMAGE ..."
+               retry docker pull $SRC_IMAGE $PLATFORM_ARG
+               
+               echo "🏷️ 打标签 -> $ALI_TARGET"
+               docker tag "$SRC_IMAGE" "$ALI_TARGET"
                
                echo "📤 推送 $ALI_TARGET ..."
-               docker tag $SRC_IMAGE $ALI_TARGET
-               docker push $ALI_TARGET
+               retry docker push "$ALI_TARGET"
                
-               echo "🧹 清理..."
-               docker rmi $SRC_IMAGE $ALI_TARGET || true
+               echo "🧹在此清理 ..."
+               docker rmi "$SRC_IMAGE" "$ALI_TARGET" >/dev/null 2>&1 || true
             fi
             
-            df -h | grep "/var/lib/docker" || true
+            # 简单监控
+            echo "磁盘空间:"
+            df -h | grep "/var/lib/docker" | awk '{print $4 " available"}' || true
 
           done < images.txt

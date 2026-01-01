@@ -4,18 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       image_name:
-        description: '原镜像名称 (例如: mysql:8.0)'
+        description: "原镜像名称 (例如: mysql:8.0)"
         required: true
-        default: 'nginx:alpine'
+        default: "nginx:alpine"
       target_name:
-        description: '保存名称 (可选，留空则自动处理)'
+        description: "保存名称 (可选，留空则自动处理)"
         required: false
       platform:
-        description: '指定架构 (例如: linux/arm64，留空默认 amd64)'
+        description: "指定架构 (例如: linux/arm64，留空默认 amd64)"
         required: false
-        default: ''
+        default: ""
       force_sync:
-        description: '强制同步 (跳过摘要比对)'
+        description: "强制同步 (跳过摘要比对)"
         type: boolean
         required: false
         default: false
@@ -41,10 +41,10 @@ jobs:
         with:
           root-reserve-mb: 2048
           swap-size-mb: 128
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          build-mount-path: '/var/lib/docker/'
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+          build-mount-path: "/var/lib/docker/"
 
       - name: 重启 Docker
         run: sudo service docker restart
@@ -73,34 +73,58 @@ jobs:
 
       # 3. 核心逻辑 (双向智能同步)
       - name: 执行双重同步
+        env:
+          INPUT_IMAGE: ${{ inputs.image_name }}
+          INPUT_TARGET: ${{ inputs.target_name }}
+          INPUT_PLATFORM: ${{ inputs.platform }}
+          INPUT_FORCE: ${{ inputs.force_sync }}
         run: |
+          # Define retry function
+          function retry {
+            local n=1
+            local max=3
+            local delay=5
+            while true; do
+              "$@" && break || {
+                if [[ $n -lt $max ]]; then
+                  ((n++))
+                  echo "⚠️ Command failed. Attempt $n/$max:"
+                  sleep $delay;
+                else
+                  echo "❌ The command has failed after $max attempts."
+                  return 1
+                fi
+              }
+            done
+          }
+
           # --- A. 变量准备 ---
-          SRC_IMAGE="${{ inputs.image_name }}"
+          SRC_IMAGE="$INPUT_IMAGE"
           PLATFORM_ARG=""
           # 默认架构参数供 Skopeo 使用
           SKOPEO_OS="linux"
           SKOPEO_ARCH="amd64"
 
-          if [ -n "${{ inputs.platform }}" ]; then
-            PLATFORM_ARG="--platform ${{ inputs.platform }}"
-            echo "⚙️ 指定架构: ${{ inputs.platform }}"
+          if [ -n "$INPUT_PLATFORM" ]; then
+            PLATFORM_ARG="--platform $INPUT_PLATFORM"
+            echo "⚙️ 指定架构: $INPUT_PLATFORM"
             
             # 解析 platform (例如 linux/arm64)
-            if [[ "${{ inputs.platform }}" == *"/"* ]]; then
-               SKOPEO_OS=$(echo "${{ inputs.platform }}" | awk -F'/' '{print $1}')
-               SKOPEO_ARCH=$(echo "${{ inputs.platform }}" | awk -F'/' '{print $2}')
+            if [[ "$INPUT_PLATFORM" == *"/"* ]]; then
+               SKOPEO_OS=$(echo "$INPUT_PLATFORM" | awk -F'/' '{print $1}')
+               SKOPEO_ARCH=$(echo "$INPUT_PLATFORM" | awk -F'/' '{print $2}')
             else
-               SKOPEO_ARCH="${{ inputs.platform }}"
+               SKOPEO_ARCH="$INPUT_PLATFORM"
             fi
           fi
-          
+
           # 构造 Skopeo 参数：强制检查特定架构的摘要，避免 Manifest List 导致的误判
           SKOPEO_FLAGS="--override-os $SKOPEO_OS --override-arch $SKOPEO_ARCH"
           echo "🔍 Skopeo 检查模式: OS=$SKOPEO_OS, ARCH=$SKOPEO_ARCH"
 
           # --- B. 智能命名计算 ---
-          if [ -n "${{ inputs.target_name }}" ]; then
-            BASE_TAG="${{ inputs.target_name }}"
+          if [ -n "$INPUT_TARGET" ]; then
+            BASE_TAG="$INPUT_TARGET"
           else
              # 提取命名空间 (如 bitnami/nginx -> bitnami)
              SCOPE=$(echo "$SRC_IMAGE" | awk -F'/' '{if (NF>2) print $(NF-1); else if (NF==2 && $1!="library") print $1; else print ""}')
@@ -113,8 +137,8 @@ jobs:
              fi
              
              # 多架构前缀
-             if [ -n "${{ inputs.platform }}" ]; then
-                PLAT_PREFIX=$(echo "${{ inputs.platform }}" | sed 's/\//_/g')
+             if [ -n "$INPUT_PLATFORM" ]; then
+                PLAT_PREFIX=$(echo "$INPUT_PLATFORM" | sed 's/\//_/g')
                 BASE_TAG="${PLAT_PREFIX}_${BASE_TAG}"
              fi
           fi
@@ -122,7 +146,7 @@ jobs:
           # 构造两个目标地址
           # 1. 阿里云地址
           ALI_TARGET="$ALIYUN_REGISTRY/$ALIYUN_NAMESPACE/$BASE_TAG"
-          
+
           # 2. GHCR 地址 (强制小写)
           OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           TAG_LOWER=$(echo "$BASE_TAG" | tr '[:upper:]' '[:lower:]')
@@ -134,17 +158,17 @@ jobs:
           # --- C. 智能摘要比对 (三方博弈) ---
           PUSH_ALI=true
           PUSH_GHCR=true
-          
-          if [ "${{ inputs.force_sync }}" == "false" ]; then
+
+          if [ "$INPUT_FORCE" == "false" ]; then
              echo "🔍 开始比对摘要..."
              # 获取源摘要 (带架构参数)
-             SRC_DIGEST=$(skopeo inspect $SKOPEO_FLAGS docker://$SRC_IMAGE --format='{{.Digest}}' 2>/dev/null || echo "")
+             SRC_DIGEST=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$SRC_IMAGE" --format='{{.Digest}}' 2>/dev/null || echo "")
              
              # 获取阿里云摘要 (带架构参数)
-             ALI_DIGEST=$(skopeo inspect $SKOPEO_FLAGS docker://$ALI_TARGET --format='{{.Digest}}' 2>/dev/null || echo "")
+             ALI_DIGEST=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$ALI_TARGET" --format='{{.Digest}}' 2>/dev/null || echo "")
              
              # 获取 GHCR 摘要 (带架构参数)
-             GHCR_DIGEST=$(skopeo inspect $SKOPEO_FLAGS docker://$GHCR_TARGET --format='{{.Digest}}' 2>/dev/null || echo "")
+             GHCR_DIGEST=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$GHCR_TARGET" --format='{{.Digest}}' 2>/dev/null || echo "")
 
              echo "   源摘要: ${SRC_DIGEST:0:12}"
              echo "   阿里摘要: ${ALI_DIGEST:0:12}"
@@ -169,13 +193,13 @@ jobs:
           # 只要有一方需要推，就需要拉取
           if [ "$PUSH_ALI" == "true" ] || [ "$PUSH_GHCR" == "true" ]; then
              echo "📥 正在拉取源镜像: $SRC_IMAGE"
-             docker pull $SRC_IMAGE $PLATFORM_ARG
+             retry docker pull "$SRC_IMAGE" $PLATFORM_ARG
 
              # 1. 推送阿里云
              if [ "$PUSH_ALI" == "true" ]; then
                 echo "🚀 推送阿里云..."
                 docker tag $SRC_IMAGE $ALI_TARGET
-                docker push $ALI_TARGET
+                retry docker push "$ALI_TARGET"
                 docker rmi $ALI_TARGET
              fi
 
@@ -183,7 +207,7 @@ jobs:
              if [ "$PUSH_GHCR" == "true" ]; then
                 echo "🚀 推送 GHCR..."
                 docker tag $SRC_IMAGE $GHCR_TARGET
-                docker push $GHCR_TARGET
+                retry docker push "$GHCR_TARGET"
                 docker rmi $GHCR_TARGET
              fi
              

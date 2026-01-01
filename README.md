@@ -83,6 +83,7 @@ bitnami/redis:latest
 * **效果**：如果阿里云有了但 GHCR 没有，只推 GHCR；全都有则全跳过。
 * **输入参数**：
 * `image_name`: 原镜像名 (如 `python:3.9`)
+* `target_name`: (可选) 自定义目标名称 (如 `my-python`)
 * `platform`: (可选) 如 `linux/arm64`
 * `force_sync`: (可选) 勾选则强制覆盖
 
