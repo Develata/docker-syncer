@@ -1,20 +1,25 @@
-name: 搬运镜像到阿里云
+name: 搬运镜像到阿里云 (Manual)
 
 on:
   workflow_dispatch:
     inputs:
       image_name:
-        description: '原镜像名称 (例如: mysql:8.0 或 nginx:latest)'
+        description: '原镜像名称 (例如: mysql:8.0)'
         required: true
-        default: 'nginx:latest'
+        default: 'nginx:alpine'
       new_name:
-        description: '保存到阿里云的名称 (留空则与原名一致)'
+        description: '保存名称 (留空则自动处理，支持 bitnami/nginx -> bitnami_nginx)'
         required: false
         default: ''
-      target_namespace:
-        description: '目标命名空间 (留空则使用 Secret 默认值)'
+      platform:
+        description: '指定架构 (例如: linux/arm64，留空默认 amd64)'
         required: false
         default: ''
+      force_sync:
+        description: '强制同步 (跳过摘要比对)'
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   push-to-aliyun:
@@ -27,31 +32,62 @@ jobs:
           username: ${{ secrets.ALIYUN_USERNAME }}
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
-      - name: 拉取、重命名并推送
+      - name: 执行同步
         run: |
-          # 1. 解析输入
+          # 1. 变量准备
           SRC_IMAGE="${{ inputs.image_name }}"
-          
-          # 如果用户没填新名字，就提取原镜像的最后一段，比如 mysql:8.0
-          if [ -z "${{ inputs.new_name }}" ]; then
-            TARGET_IMAGE_TAG=$(echo "$SRC_IMAGE" | awk -F'/' '{print $NF}')
+          PLATFORM_ARG=""
+          if [ -n "${{ inputs.platform }}" ]; then
+            PLATFORM_ARG="--platform ${{ inputs.platform }}"
+            echo "⚙️ 指定架构: ${{ inputs.platform }}"
+          fi
+
+          # 2. 目标名称计算 (智能前缀)
+          if [ -n "${{ inputs.new_name }}" ]; then
+            TARGET_TAG="${{ inputs.new_name }}"
           else
-            TARGET_IMAGE_TAG="${{ inputs.new_name }}"
+             # 提取命名空间
+             SCOPE=$(echo "$SRC_IMAGE" | awk -F'/' '{if (NF>2) print $(NF-1); else if (NF==2 && $1!="library") print $1; else print ""}')
+             BASE_NAME=$(echo "$SRC_IMAGE" | awk -F'/' '{print $NF}')
+             
+             if [ -n "$SCOPE" ]; then
+                TARGET_TAG="${SCOPE}_${BASE_NAME}"
+             else
+                TARGET_TAG="${BASE_NAME}"
+             fi
+             
+             # 如果是多架构，建议加前缀
+             if [ -n "${{ inputs.platform }}" ]; then
+                PLAT_PREFIX=$(echo "${{ inputs.platform }}" | sed 's/\//_/g')
+                TARGET_TAG="${PLAT_PREFIX}_${TARGET_TAG}"
+             fi
           fi
-          
-          # 组合阿里云的目标地址
-          NAMESPACE="${{ inputs.target_namespace }}"
-          if [ -z "$NAMESPACE" ]; then
-            NAMESPACE="${{ secrets.ALIYUN_NAMESPACE }}"
+
+          ALI_TARGET="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/$TARGET_TAG"
+
+          # 3. 摘要比对
+          NEED_SYNC=true
+          if [ "${{ inputs.force_sync }}" == "false" ]; then
+             echo "🔍 检查 Digest..."
+             SRC_DIGEST=$(skopeo inspect docker://$SRC_IMAGE --format='{{.Digest}}' 2>/dev/null || echo "")
+             DEST_DIGEST=$(skopeo inspect docker://$ALI_TARGET --format='{{.Digest}}' 2>/dev/null || echo "")
+             
+             if [ -n "$SRC_DIGEST" ] && [ "$SRC_DIGEST" == "$DEST_DIGEST" ]; then
+                echo "✅ 摘要一致 ($SRC_DIGEST)，无需同步。"
+                NEED_SYNC=false
+             fi
           fi
-          
-          ALIYUN_TARGET="${{ secrets.ALIYUN_REGISTRY }}/$NAMESPACE/$TARGET_IMAGE_TAG"
-          
-          echo "正在从 $SRC_IMAGE 拉取..."
-          docker pull $SRC_IMAGE
-          
-          echo "正在推送到 $ALIYUN_TARGET ..."
-          docker tag $SRC_IMAGE $ALIYUN_TARGET
-          docker push $ALIYUN_TARGET
-          
-          echo "✅ 成功！国内拉取地址: $ALIYUN_TARGET"
+
+          # 4. 拉取与推送
+          if [ "$NEED_SYNC" == "true" ]; then
+             echo "📥 Pulling $SRC_IMAGE ..."
+             docker pull $SRC_IMAGE $PLATFORM_ARG
+             
+             echo "🏷️ Tagging as $ALI_TARGET ..."
+             docker tag $SRC_IMAGE $ALI_TARGET
+             
+             echo "📤 Pushing ..."
+             docker push $ALI_TARGET
+             
+             echo "✅ 成功! 国内地址: $ALI_TARGET"
+          fi
