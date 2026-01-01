@@ -77,10 +77,26 @@ jobs:
           # --- A. 变量准备 ---
           SRC_IMAGE="${{ inputs.image_name }}"
           PLATFORM_ARG=""
+          # 默认架构参数供 Skopeo 使用
+          SKOPEO_OS="linux"
+          SKOPEO_ARCH="amd64"
+
           if [ -n "${{ inputs.platform }}" ]; then
             PLATFORM_ARG="--platform ${{ inputs.platform }}"
             echo "⚙️ 指定架构: ${{ inputs.platform }}"
+            
+            # 解析 platform (例如 linux/arm64)
+            if [[ "${{ inputs.platform }}" == *"/"* ]]; then
+               SKOPEO_OS=$(echo "${{ inputs.platform }}" | awk -F'/' '{print $1}')
+               SKOPEO_ARCH=$(echo "${{ inputs.platform }}" | awk -F'/' '{print $2}')
+            else
+               SKOPEO_ARCH="${{ inputs.platform }}"
+            fi
           fi
+          
+          # 构造 Skopeo 参数：强制检查特定架构的摘要，避免 Manifest List 导致的误判
+          SKOPEO_FLAGS="--override-os $SKOPEO_OS --override-arch $SKOPEO_ARCH"
+          echo "🔍 Skopeo 检查模式: OS=$SKOPEO_OS, ARCH=$SKOPEO_ARCH"
 
           # --- B. 智能命名计算 ---
           if [ -n "${{ inputs.target_name }}" ]; then
@@ -121,14 +137,18 @@ jobs:
           
           if [ "${{ inputs.force_sync }}" == "false" ]; then
              echo "🔍 开始比对摘要..."
-             # 获取源摘要
-             SRC_DIGEST=$(skopeo inspect docker://$SRC_IMAGE --format='{{.Digest}}' 2>/dev/null || echo "")
+             # 获取源摘要 (带架构参数)
+             SRC_DIGEST=$(skopeo inspect $SKOPEO_FLAGS docker://$SRC_IMAGE --format='{{.Digest}}' 2>/dev/null || echo "")
              
-             # 获取阿里云摘要
-             ALI_DIGEST=$(skopeo inspect docker://$ALI_TARGET --format='{{.Digest}}' 2>/dev/null || echo "")
+             # 获取阿里云摘要 (带架构参数)
+             ALI_DIGEST=$(skopeo inspect $SKOPEO_FLAGS docker://$ALI_TARGET --format='{{.Digest}}' 2>/dev/null || echo "")
              
-             # 获取 GHCR 摘要
-             GHCR_DIGEST=$(skopeo inspect docker://$GHCR_TARGET --format='{{.Digest}}' 2>/dev/null || echo "")
+             # 获取 GHCR 摘要 (带架构参数)
+             GHCR_DIGEST=$(skopeo inspect $SKOPEO_FLAGS docker://$GHCR_TARGET --format='{{.Digest}}' 2>/dev/null || echo "")
+
+             echo "   源摘要: ${SRC_DIGEST:0:12}"
+             echo "   阿里摘要: ${ALI_DIGEST:0:12}"
+             echo "   GHCR摘要: ${GHCR_DIGEST:0:12}"
 
              # 判断阿里云是否需要更新
              if [ -n "$SRC_DIGEST" ] && [ "$SRC_DIGEST" == "$ALI_DIGEST" ]; then
