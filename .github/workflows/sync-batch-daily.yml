@@ -2,7 +2,6 @@ name: 批量同步 (Batch Sync)
 
 on:
   schedule:
-    # 每月 1号 和 15号 北京时间 08:00 (UTC 00:00) 运行
     - cron: "0 0 1,15 * *"
   workflow_dispatch:
     inputs:
@@ -20,8 +19,7 @@ jobs:
   batch-sync:
     runs-on: ubuntu-latest
     steps:
-      # 1. 极致空间清理 (在拉取任何东西之前)
-      - name: 🗑️ 清理磁盘空间 (Max Optimization)
+      - name: 🗑️ 清理磁盘空间
         uses: easimon/maximize-build-space@master
         with:
           root-reserve-mb: 2048
@@ -45,7 +43,7 @@ jobs:
           username: ${{ secrets.ALIYUN_USERNAME }}
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
-      - name: 登录 DockerHub (避免限流)
+      - name: 登录 DockerHub
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -54,106 +52,93 @@ jobs:
 
       - name: 📦 批量处理镜像
         run: |
-          # 检查 images.txt
           if [ ! -f "images.txt" ]; then
-            echo "❌ images.txt 不存在，跳过同步。"
+            echo "❌ images.txt 不存在。"
             exit 0
           fi
 
-          echo "📋 开始处理镜像列表..."
+          echo "📋 开始处理..."
           
-          # 逐行读取
           while IFS= read -r line || [ -n "$line" ]; do
-            # 1. 预处理：去除首尾空格
             line=$(echo "$line" | xargs)
-            
-            # 2. 忽略空行和注释
             [[ -z "$line" || "$line" =~ ^# ]] && continue
 
-            echo "=================================================================="
-            echo "🔄 原始指令: $line"
+            echo "----------------------------------------"
+            echo "🔄 指令: $line"
 
-            # 3. 解析参数 (--platform) 和 镜像名
-            # 提取平台参数，例如 --platform=linux/arm64
+            # 1. 解析参数
             PLATFORM_ARG=""
+            SKOPEO_OS="linux"
+            SKOPEO_ARCH="amd64"
+            
             if [[ "$line" == *"--platform"* ]]; then
-              # 提取 --platform=xxx 或者 --platform xxx
-              # 这里简单匹配 --platform=xxxxx
               PLATFORM_VAL=$(echo "$line" | grep -oP '(?<=--platform[ =])\S+')
               if [ -n "$PLATFORM_VAL" ]; then
                  PLATFORM_ARG="--platform $PLATFORM_VAL"
-                 echo "⚙️ 指定架构: $PLATFORM_VAL"
+                 echo "⚙️ 架构: $PLATFORM_VAL"
+                 
+                 if [[ "$PLATFORM_VAL" == *"/"* ]]; then
+                    SKOPEO_OS=$(echo "$PLATFORM_VAL" | awk -F'/' '{print $1}')
+                    SKOPEO_ARCH=$(echo "$PLATFORM_VAL" | awk -F'/' '{print $2}')
+                 else
+                    SKOPEO_ARCH="$PLATFORM_VAL"
+                 fi
               fi
             fi
+            
+            SKOPEO_FLAGS="--override-os $SKOPEO_OS --override-arch $SKOPEO_ARCH"
 
-            # 提取镜像名称 (取该行的最后一个字段)
             SRC_IMAGE=$(echo "$line" | awk '{print $NF}')
             
-            # 4. 智能命名策略 (Smart Prefix)
-            # 提取命名空间 (如 bitnami/nginx -> bitnami)
+            # 2. 命名处理
             SCOPE=$(echo "$SRC_IMAGE" | awk -F'/' '{if (NF>2) print $(NF-1); else if (NF==2 && $1!="library") print $1; else print ""}')
-            # 提取镜像名+Tag (如 nginx:latest)
             BASE_NAME=$(echo "$SRC_IMAGE" | awk -F'/' '{print $NF}')
             
             if [ -n "$SCOPE" ]; then
-               # 如果有非官方命名空间，加前缀，防止冲突 (e.g. bitnami_nginx:latest)
                TARGET_TAG="${SCOPE}_${BASE_NAME}"
             else
-               # 官方镜像保持原样 (e.g. nginx:latest)
                TARGET_TAG="${BASE_NAME}"
             fi
             
-            # 如果指定了架构，建议在 Tag 里也体现，防止同名不同架构覆盖
             if [ -n "$PLATFORM_VAL" ]; then
-               # 将 linux/arm64 转为 linux_arm64
                PLATFORM_TAG=$(echo "$PLATFORM_VAL" | sed 's/\//_/g')
                TARGET_TAG="${PLATFORM_TAG}_${TARGET_TAG}"
             fi
 
             ALI_TARGET="$ALIYUN_REGISTRY/$ALIYUN_NAMESPACE/$TARGET_TAG"
             
-            # 5. 智能摘要比对 (Skopeo Check)
+            # 3. 摘要比对
             FORCE="${{ inputs.force_sync }}"
             NEED_PULL=true
 
             if [ "$FORCE" == "false" ]; then
-               echo "🔍 正在比对 Digest..."
-               # 获取源镜像 Digest (处理多架构情况，inspect 可能返回列表，这里简化取第一个或主 Digest)
-               # 注意：加上 PLATFORM_ARG 传给 skopeo (如果 skopeo 支持的话，或者忽略)
-               # 简单起见，我们对比 docker pull 会拉取到的那个 manifest digest
-               
-               SRC_DIGEST=$(skopeo inspect docker://$SRC_IMAGE --format='{{.Digest}}' 2>/dev/null || echo "")
-               DEST_DIGEST=$(skopeo inspect docker://$ALI_TARGET --format='{{.Digest}}' 2>/dev/null || echo "")
+               echo "🔍 比对 Digest ($SKOPEO_ARCH)..."
+               SRC_DIGEST=$(skopeo inspect $SKOPEO_FLAGS docker://$SRC_IMAGE --format='{{.Digest}}' 2>/dev/null || echo "")
+               DEST_DIGEST=$(skopeo inspect $SKOPEO_FLAGS docker://$ALI_TARGET --format='{{.Digest}}' 2>/dev/null || echo "")
                
                if [ -n "$SRC_DIGEST" ] && [ "$SRC_DIGEST" == "$DEST_DIGEST" ]; then
-                  echo "✅ 镜像已是最新 (Digest: ${SRC_DIGEST:0:12})，跳过同步。"
+                  echo "✅ 镜像最新，跳过。"
                   NEED_PULL=false
                else
-                  echo "🚀 发现更新 (或目标不存在)，准备同步..."
-                  echo "   源: ${SRC_DIGEST:0:12} vs 目标: ${DEST_DIGEST:0:12}"
+                  echo "🚀 需要同步。"
                fi
             else
-               echo "⚠️ 强制同步模式，跳过比对。"
+               echo "⚠️ 强制同步。"
             fi
 
-            # 6. 执行同步 (边下边删)
+            # 4. 执行
             if [ "$NEED_PULL" == "true" ]; then
-               echo "📥 拉取: $SRC_IMAGE $PLATFORM_ARG"
+               echo "📥 拉取..."
                docker pull $SRC_IMAGE $PLATFORM_ARG
                
-               echo "🏷️ 打标签: $ALI_TARGET"
+               echo "📤 推送 $ALI_TARGET ..."
                docker tag $SRC_IMAGE $ALI_TARGET
-               
-               echo "📤 推送: $ALI_TARGET"
                docker push $ALI_TARGET
                
-               # 7. 立即清理 (关键步骤)
-               echo "🧹 清理本地缓存..."
+               echo "🧹 清理..."
                docker rmi $SRC_IMAGE $ALI_TARGET || true
-               echo "✅ 完成！"
             fi
             
-            # 打印当前磁盘剩余
             df -h | grep "/var/lib/docker" || true
 
           done < images.txt
