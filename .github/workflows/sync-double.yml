@@ -4,9 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       image_name:
-        description: '原镜像名称 (如: mysql:8.0)'
+        description: '原镜像名称 (例如: mysql:8.0)'
         required: true
         default: 'nginx:alpine'
+      target_name:
+        description: '保存名称 (可选，留空则自动处理)'
+        required: false
+      platform:
+        description: '指定架构 (例如: linux/arm64，留空默认 amd64)'
+        required: false
+        default: ''
+      force_sync:
+        description: '强制同步 (跳过摘要比对)'
+        type: boolean
+        required: false
+        default: false
 
 env:
   # 阿里云配置
@@ -23,50 +35,141 @@ jobs:
       packages: write # 必须赋予写 GHCR 的权限
 
     steps:
-      - name: 1. 登录阿里云
+      # 1. 极致空间清理
+      - name: 🗑️ 清理磁盘空间
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 2048
+          swap-size-mb: 128
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          build-mount-path: '/var/lib/docker/'
+
+      - name: 重启 Docker
+        run: sudo service docker restart
+
+      # 2. 登录流程 (3方登录)
+      - name: 登录 DockerHub (避免限流)
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: 登录阿里云
         uses: docker/login-action@v2
         with:
           registry: ${{ env.ALIYUN_REGISTRY }}
           username: ${{ secrets.ALIYUN_USERNAME }}
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
-      - name: 2. 登录 GHCR
+      - name: 登录 GHCR
         uses: docker/login-action@v2
         with:
           registry: ${{ env.GHCR_REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 3. 拉取原镜像
+      # 3. 核心逻辑 (双向智能同步)
+      - name: 执行双重同步
         run: |
-          docker pull ${{ inputs.image_name }}
+          # --- A. 变量准备 ---
+          SRC_IMAGE="${{ inputs.image_name }}"
+          PLATFORM_ARG=""
+          if [ -n "${{ inputs.platform }}" ]; then
+            PLATFORM_ARG="--platform ${{ inputs.platform }}"
+            echo "⚙️ 指定架构: ${{ inputs.platform }}"
+          fi
 
-      - name: 4. 推送到 阿里云
-        run: |
-          # 提取镜像名和标签 (例如 mysql:8.0)
-          IMAGE_TAG=$(echo "${{ inputs.image_name }}" | awk -F'/' '{print $NF}')
-          
-          # 组合地址
-          ALI_TARGET="$ALIYUN_REGISTRY/$ALIYUN_NAMESPACE/$IMAGE_TAG"
-          
-          echo "🚀 推送至阿里云: $ALI_TARGET"
-          docker tag ${{ inputs.image_name }} $ALI_TARGET
-          docker push $ALI_TARGET
+          # --- B. 智能命名计算 ---
+          if [ -n "${{ inputs.target_name }}" ]; then
+            BASE_TAG="${{ inputs.target_name }}"
+          else
+             # 提取命名空间 (如 bitnami/nginx -> bitnami)
+             SCOPE=$(echo "$SRC_IMAGE" | awk -F'/' '{if (NF>2) print $(NF-1); else if (NF==2 && $1!="library") print $1; else print ""}')
+             NAME_ONLY=$(echo "$SRC_IMAGE" | awk -F'/' '{print $NF}')
+             
+             if [ -n "$SCOPE" ]; then
+                BASE_TAG="${SCOPE}_${NAME_ONLY}"
+             else
+                BASE_TAG="${NAME_ONLY}"
+             fi
+             
+             # 多架构前缀
+             if [ -n "${{ inputs.platform }}" ]; then
+                PLAT_PREFIX=$(echo "${{ inputs.platform }}" | sed 's/\//_/g')
+                BASE_TAG="${PLAT_PREFIX}_${BASE_TAG}"
+             fi
+          fi
 
-      - name: 5. 推送到 GHCR
-        run: |
-          IMAGE_TAG=$(echo "${{ inputs.image_name }}" | awk -F'/' '{print $NF}')
+          # 构造两个目标地址
+          # 1. 阿里云地址
+          ALI_TARGET="$ALIYUN_REGISTRY/$ALIYUN_NAMESPACE/$BASE_TAG"
           
-          # 关键步骤：GitHub 用户名转小写 (GHCR 强制要求)
-          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          
-          # 组合地址
-          GHCR_TARGET="$GHCR_REGISTRY/$OWNER/$IMAGE_TAG"
-          
-          echo "🚀 推送至 GHCR: $GHCR_TARGET"
-          docker tag ${{ inputs.image_name }} $GHCR_TARGET
-          docker push $GHCR_TARGET
+          # 2. GHCR 地址 (强制小写)
+          OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          TAG_LOWER=$(echo "$BASE_TAG" | tr '[:upper:]' '[:lower:]')
+          GHCR_TARGET="$GHCR_REGISTRY/$OWNER_LOWER/$TAG_LOWER"
 
-      - name: 6. 总结
-        run: |
-          echo "✅ 同步完成！"
+          echo "🎯 阿里云目标: $ALI_TARGET"
+          echo "🎯 GHCR 目标: $GHCR_TARGET"
+
+          # --- C. 智能摘要比对 (三方博弈) ---
+          PUSH_ALI=true
+          PUSH_GHCR=true
+          
+          if [ "${{ inputs.force_sync }}" == "false" ]; then
+             echo "🔍 开始比对摘要..."
+             # 获取源摘要
+             SRC_DIGEST=$(skopeo inspect docker://$SRC_IMAGE --format='{{.Digest}}' 2>/dev/null || echo "")
+             
+             # 获取阿里云摘要
+             ALI_DIGEST=$(skopeo inspect docker://$ALI_TARGET --format='{{.Digest}}' 2>/dev/null || echo "")
+             
+             # 获取 GHCR 摘要
+             GHCR_DIGEST=$(skopeo inspect docker://$GHCR_TARGET --format='{{.Digest}}' 2>/dev/null || echo "")
+
+             # 判断阿里云是否需要更新
+             if [ -n "$SRC_DIGEST" ] && [ "$SRC_DIGEST" == "$ALI_DIGEST" ]; then
+                echo "✅ 阿里云已是最新，跳过。"
+                PUSH_ALI=false
+             fi
+
+             # 判断 GHCR 是否需要更新
+             if [ -n "$SRC_DIGEST" ] && [ "$SRC_DIGEST" == "$GHCR_DIGEST" ]; then
+                echo "✅ GHCR 已是最新，跳过。"
+                PUSH_GHCR=false
+             fi
+          else
+             echo "⚠️ 强制模式，跳过比对。"
+          fi
+
+          # --- D. 执行同步 ---
+          # 只要有一方需要推，就需要拉取
+          if [ "$PUSH_ALI" == "true" ] || [ "$PUSH_GHCR" == "true" ]; then
+             echo "📥 正在拉取源镜像: $SRC_IMAGE"
+             docker pull $SRC_IMAGE $PLATFORM_ARG
+
+             # 1. 推送阿里云
+             if [ "$PUSH_ALI" == "true" ]; then
+                echo "🚀 推送阿里云..."
+                docker tag $SRC_IMAGE $ALI_TARGET
+                docker push $ALI_TARGET
+                docker rmi $ALI_TARGET
+             fi
+
+             # 2. 推送 GHCR
+             if [ "$PUSH_GHCR" == "true" ]; then
+                echo "🚀 推送 GHCR..."
+                docker tag $SRC_IMAGE $GHCR_TARGET
+                docker push $GHCR_TARGET
+                docker rmi $GHCR_TARGET
+             fi
+             
+             # 清理源镜像
+             docker rmi $SRC_IMAGE
+             echo "✅ 双重同步完成！"
+          else
+             echo "💤 所有目标都已是最新，无需操作。"
+          fi
