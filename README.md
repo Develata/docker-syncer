@@ -13,6 +13,17 @@
 
 ---
 
+## ⚡ 快速开始 (Quick Start)
+
+本项目已开启 **Template (模板)** 功能，你可以快速创建属于自己的镜像搬运仓库：
+
+1. 点击仓库右上角的 **[Use this template]** 按钮。
+2. 选择 **Create a new repository**。
+3. 输入你的仓库名称，建议设为 **Public** (以便免费使用 GHCR 无限存储)。
+4. 按照下方 [准备工作](#️-准备工作-setup) 配置你的 Secrets 即可开始使用。
+
+---
+
 ## 🛠️ 准备工作 (Setup)
 
 在使用之前，你需要配置 GitHub 仓库的 **Secrets**。
@@ -36,9 +47,9 @@
 ## 🚀 如何使用 (Usage)
 
 ### 1. 启动搬运
-1. 点击仓库顶部的 **Actions** 标签页。
+1. 点击仓���顶部的 **Actions** 标签页。
 2. 在左侧选择对应的工作流（例如 **"镜像搬运工"**）。
-3. 点击右侧的 **Run workflow** 按钮。
+3. 点击 right 侧的 **Run workflow** 按钮。
 4. 输入参数：
     * **原镜像名称**: `mysql:8.0` (必填)
     * **保存名称**: 留空则默认与原名一致 (选填)
@@ -79,7 +90,7 @@ docker pull ghcr.io/<你的GitHub用户名>/mysql:8.0
 
 
 * **Sync to GHCR (`mirror-to-ghcr.yml`)**:
-* 专门将镜像推送到 GitHub Packages。
+* 专门将镜像推送到 GitHub Packages.
 * **适用场景**：海外服务器使用，或作为冷备份。
 
 
