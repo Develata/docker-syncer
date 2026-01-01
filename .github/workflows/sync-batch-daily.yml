@@ -238,7 +238,7 @@ jobs:
           if [[ -n $(git status -s) ]]; then
             git config --local user.email "action@github.com"
             git config --local user.name "GitHub Action"
-            git commit -m "docs: update last sync badge [skip ci]"
+            git commit -am "docs: update last sync badge [skip ci]"
             git push
           else
              echo "没有变更需要提交。"
