@@ -26,6 +26,7 @@ env:
   ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}
   # GHCR 配置
   GHCR_REGISTRY: ghcr.io
+  WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
 
 jobs:
   double-push:
@@ -49,8 +50,17 @@ jobs:
       - name: 重启 Docker
         run: sudo service docker restart
 
+      - name: 检查 Secrets
+        run: |
+          if [ -z "${{ secrets.ALIYUN_USERNAME }}" ] || [ -z "${{ secrets.ALIYUN_PASSWORD }}" ]; then
+            echo "❌ 错误: 未配置 ALIYUN_USERNAME 或 ALIYUN_PASSWORDSecrets。"
+            echo "请在 Settings -> Secrets and variables -> Actions 中配置。"
+            exit 1
+          fi
+
       # 2. 登录流程 (3方登录)
       - name: 登录 DockerHub (避免限流)
+        if: secrets.DOCKERHUB_USERNAME != ''
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -217,3 +227,33 @@ jobs:
           else
              echo "💤 所有目标都已是最新，无需操作。"
           fi
+
+      - name: 发送 Webhook 通知
+        if: always()
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "未配置 WEBHOOK_URL，跳过通知。"
+            exit 0
+          fi
+
+          JOB_STATUS="${{ job.status }}"
+          REPO_NAME="${{ github.repository }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          if [ "$JOB_STATUS" == "success" ]; then
+             TITLE="✅ 双重同步成功"
+          else
+             TITLE="❌ 双重同步失败"
+          fi
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "msg_type": "text",
+            "content": {
+              "text": "$TITLE\n仓库: $REPO_NAME\n状态: $JOB_STATUS\n链接: $RUN_URL"
+            }
+          }
+          EOF
+          )
+
+          curl -H "Content-Type: application/json" -d "$PAYLOAD" "$WEBHOOK_URL" || echo "发送失败"

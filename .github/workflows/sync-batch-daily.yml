@@ -14,10 +14,14 @@ on:
 env:
   ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
   ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}
+  WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
 
 jobs:
   batch-sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     steps:
       - name: 🗑️ 清理磁盘空间
         uses: easimon/maximize-build-space@master
@@ -33,6 +37,14 @@ jobs:
       - name: 重启 Docker 服务
         run: sudo service docker restart
 
+      - name: 检查 Secrets
+        run: |
+          if [ -z "${{ secrets.ALIYUN_USERNAME }}" ] || [ -z "${{ secrets.ALIYUN_PASSWORD }}" ]; then
+            echo "❌ 错误: 未配置 ALIYUN_USERNAME 或 ALIYUN_PASSWORDSecrets。"
+            echo "请在 Settings -> Secrets and variables -> Actions 中配置。"
+            exit 1
+          fi
+
       - name: Checkout Code
         uses: actions/checkout@v3
 
@@ -44,6 +56,7 @@ jobs:
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
       - name: 登录 DockerHub
+        if: secrets.DOCKERHUB_USERNAME != ''
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -187,3 +200,63 @@ jobs:
             df -h | grep "/var/lib/docker" | awk '{print $4 " available"}' || true
 
           done < images.txt
+
+      - name: 更新 README Badge
+        run: |
+          # 获取当前 UTC+8 时间
+          DATE=$(TZ='Asia/Shanghai' date +'%Y--%m--%d %H:%M:%S')
+          # URL Encode (space -> %20)
+          ENC_DATE=${DATE// /%20}
+
+          # 构造新的 badge 链接
+          NEW_BADGE="https://img.shields.io/badge/last%20sync-$ENC_DATE-green"
+
+          # 替换 README 中的 badge
+          # 匹配模式: ![Last Sync](https://img.shields.io/badge/.*)
+          sed -i "s|!\[Last Sync\](.*)|![Last Sync]($NEW_BADGE)|g" README.md
+
+          # 提交更改
+          if [[ -n $(git status -s) ]]; then
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            git commit -m "docs: update last sync badge [skip ci]"
+            git push
+          else
+             echo "没有变更需要提交。"
+          fi
+
+      - name: 发送 Webhook 通知
+        if: always()
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "未配置 WEBHOOK_URL，跳过通知。"
+            exit 0
+          fi
+
+          JOB_STATUS="${{ job.status }}"
+          REPO_NAME="${{ github.repository }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          if [ "$JOB_STATUS" == "success" ]; then
+             COLOR="info"
+             TITLE="✅ 批量同步成功"
+          else
+             COLOR="warning"
+             TITLE="❌ 批量同步失败"
+          fi
+
+          # 构造简单 JSON (适配常见的钉钉/飞书/Discord/Slack)
+          # 这里采用通用 JSON 结构，可视需要调整
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "msg_type": "text",
+            "content": {
+              "text": "$TITLE\n仓库: $REPO_NAME\n状态: $JOB_STATUS\n链接: $RUN_URL"
+            }
+          }
+          EOF
+          )
+
+          echo "发送通知..."
+          curl -H "Content-Type: application/json" -d "$PAYLOAD" "$WEBHOOK_URL" || echo "发送失败"

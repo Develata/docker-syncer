@@ -1,4 +1,7 @@
 name: 镜像搬运工 (DockerHub -> GHCR)
+env:
+  WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+  REGISTRY: ghcr.io
 
 on:
   workflow_dispatch:
@@ -19,9 +22,6 @@ on:
         type: boolean
         required: false
         default: false
-
-env:
-  REGISTRY: ghcr.io
 
 jobs:
   mirror:
@@ -46,6 +46,7 @@ jobs:
         run: sudo service docker restart
 
       - name: 登录 DockerHub
+        if: secrets.DOCKERHUB_USERNAME != ''
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -164,3 +165,28 @@ jobs:
 
              echo "✅ 完成! docker pull $FULL_TARGET"
           fi
+
+      - name: 发送 Webhook 通知
+        if: always()
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            exit 0
+          fi
+
+          if [ "${{ job.status }}" == "success" ]; then
+             TITLE="✅ GHCR 同步成功"
+          else
+             TITLE="❌ GHCR 同步失败"
+          fi
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "msg_type": "text",
+            "content": {
+              "text": "$TITLE\n镜像: ${{ inputs.image_name }}\n状态: ${{ job.status }}\n链接: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+          }
+          EOF
+          )
+
+          curl -H "Content-Type: application/json" -d "$PAYLOAD" "$WEBHOOK_URL" || true

@@ -1,4 +1,6 @@
 name: 搬运镜像到阿里云 (Manual)
+env:
+  WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
 
 on:
   workflow_dispatch:
@@ -38,6 +40,14 @@ jobs:
 
       - name: 重启 Docker
         run: sudo service docker restart
+
+      - name: 检查 Secrets
+        run: |
+          if [ -z "${{ secrets.ALIYUN_USERNAME }}" ] || [ -z "${{ secrets.ALIYUN_PASSWORD }}" ]; then
+            echo "❌ 错误: 未配置 ALIYUN_USERNAME 或 ALIYUN_PASSWORDSecrets。"
+            echo "请在 Settings -> Secrets and variables -> Actions 中配置。"
+            exit 1
+          fi
 
       - name: 登录阿里云 ACR
         uses: docker/login-action@v2
@@ -142,3 +152,28 @@ jobs:
              
              echo "✅ 成功! 国内地址: $ALI_TARGET"
           fi
+
+      - name: 发送 Webhook 通知
+        if: always()
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            exit 0
+          fi
+
+          if [ "${{ job.status }}" == "success" ]; then
+             TITLE="✅ 阿里云同步成功"
+          else
+             TITLE="❌ 阿里云同步失败"
+          fi
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "msg_type": "text",
+            "content": {
+              "text": "$TITLE\n镜像: ${{ inputs.image_name }}\n状态: ${{ job.status }}\n链接: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+          }
+          EOF
+          )
+
+          curl -H "Content-Type: application/json" -d "$PAYLOAD" "$WEBHOOK_URL" || true
