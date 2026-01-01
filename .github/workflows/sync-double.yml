@@ -92,6 +92,7 @@ jobs:
           INPUT_FORCE: ${{ inputs.force_sync }}
         run: |
           # Define retry function
+          # Define retry function
           function retry {
             local n=1
             local max=3
@@ -100,10 +101,10 @@ jobs:
               "$@" && break || {
                 if [[ $n -lt $max ]]; then
                   ((n++))
-                  echo "⚠️ Command failed. Attempt $n/$max:"
+                  echo "⚠️ Command failed. Attempt $n/$max:" >&2
                   sleep $delay;
                 else
-                  echo "❌ The command has failed after $max attempts."
+                  echo "❌ The command has failed after $max attempts." >&2
                   return 1
                 fi
               }
@@ -172,30 +173,46 @@ jobs:
           PUSH_GHCR=true
 
           if [ "$INPUT_FORCE" == "false" ]; then
-             echo "🔍 开始比对摘要..."
-             # 获取源摘要 (带架构参数)
-             SRC_DIGEST=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$SRC_IMAGE" --format='{{.Digest}}' 2>/dev/null || echo "")
+             echo "🔍 开始比对 Digest & Created..."
+             # 获取源信息
+             SRC_INFO=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$SRC_IMAGE" --format='{{.Digest}}|{{.Created}}' 2>/dev/null || echo "")
+             SRC_DIGEST=$(echo "$SRC_INFO" | cut -d'|' -f1)
+             SRC_CREATED=$(echo "$SRC_INFO" | cut -d'|' -f2)
              
-             # 获取阿里云摘要 (带架构参数)
-             ALI_DIGEST=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$ALI_TARGET" --format='{{.Digest}}' 2>/dev/null || echo "")
+             # 获取阿里云信息
+             ALI_INFO=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$ALI_TARGET" --format='{{.Digest}}|{{.Created}}' 2>/dev/null || echo "")
+             ALI_DIGEST=$(echo "$ALI_INFO" | cut -d'|' -f1)
+             ALI_CREATED=$(echo "$ALI_INFO" | cut -d'|' -f2)
              
-             # 获取 GHCR 摘要 (带架构参数)
-             GHCR_DIGEST=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$GHCR_TARGET" --format='{{.Digest}}' 2>/dev/null || echo "")
+             # 获取 GHCR 信息
+             GHCR_INFO=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$GHCR_TARGET" --format='{{.Digest}}|{{.Created}}' 2>/dev/null || echo "")
+             GHCR_DIGEST=$(echo "$GHCR_INFO" | cut -d'|' -f1)
+             GHCR_CREATED=$(echo "$GHCR_INFO" | cut -d'|' -f2)
 
-             echo "   源摘要: ${SRC_DIGEST:0:12}"
-             echo "   阿里摘要: ${ALI_DIGEST:0:12}"
-             echo "   GHCR摘要: ${GHCR_DIGEST:0:12}"
+             echo "   源信息: $SRC_DIGEST ($SRC_CREATED)"
+             echo "   阿里云: $ALI_DIGEST ($ALI_CREATED)"
+             echo "   GHCR:   $GHCR_DIGEST ($GHCR_CREATED)"
 
              # 判断阿里云是否需要更新
-             if [ -n "$SRC_DIGEST" ] && [ "$SRC_DIGEST" == "$ALI_DIGEST" ]; then
-                echo "✅ 阿里云已是最新，跳过。"
-                PUSH_ALI=false
+             if [ -n "$SRC_DIGEST" ]; then
+                 if [ "$SRC_DIGEST" == "$ALI_DIGEST" ]; then
+                    echo "✅ 阿里云摘要一致，跳过。"
+                    PUSH_ALI=false
+                 elif [ -n "$ALI_DIGEST" ] && [ "$SRC_CREATED" == "$ALI_CREATED" ]; then
+                    echo "⚠️ (Aliyun) 摘要不同但创建时间一致，跳过。"
+                    PUSH_ALI=false
+                 fi
              fi
 
              # 判断 GHCR 是否需要更新
-             if [ -n "$SRC_DIGEST" ] && [ "$SRC_DIGEST" == "$GHCR_DIGEST" ]; then
-                echo "✅ GHCR 已是最新，跳过。"
-                PUSH_GHCR=false
+             if [ -n "$SRC_DIGEST" ]; then
+                 if [ "$SRC_DIGEST" == "$GHCR_DIGEST" ]; then
+                    echo "✅ GHCR 摘要一致，跳过。"
+                    PUSH_GHCR=false
+                 elif [ -n "$GHCR_DIGEST" ] && [ "$SRC_CREATED" == "$GHCR_CREATED" ]; then
+                    echo "⚠️ (GHCR) 摘要不同但创建时间一致，跳过。"
+                    PUSH_GHCR=false
+                 fi
              fi
           else
              echo "⚠️ 强制模式，跳过比对。"

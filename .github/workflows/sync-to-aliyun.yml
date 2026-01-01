@@ -65,6 +65,7 @@ jobs:
           INPUT_FORCE: ${{ inputs.force_sync }}
         run: |
           # Define retry function
+          # Define retry function
           function retry {
             local n=1
             local max=3
@@ -73,10 +74,10 @@ jobs:
               "$@" && break || {
                 if [[ $n -lt $max ]]; then
                   ((n++))
-                  echo "⚠️ Command failed. Attempt $n/$max:"
+                  echo "⚠️ Command failed. Attempt $n/$max:" >&2
                   sleep $delay;
                 else
-                  echo "❌ The command has failed after $max attempts."
+                  echo "❌ The command has failed after $max attempts." >&2
                   return 1
                 fi
               }
@@ -127,13 +128,28 @@ jobs:
           # 3. 摘要比对
           NEED_SYNC=true
           if [ "$INPUT_FORCE" == "false" ]; then
-             echo "🔍 检查 Digest..."
-             SRC_DIGEST=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$SRC_IMAGE" --format='{{.Digest}}' 2>/dev/null || echo "")
-             DEST_DIGEST=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$ALI_TARGET" --format='{{.Digest}}' 2>/dev/null || echo "")
+             echo "🔍 检查 Digest & Created..."
+             SRC_INFO=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$SRC_IMAGE" --format='{{.Digest}}|{{.Created}}' 2>/dev/null || echo "")
+             SRC_DIGEST=$(echo "$SRC_INFO" | cut -d'|' -f1)
+             SRC_CREATED=$(echo "$SRC_INFO" | cut -d'|' -f2)
              
-             if [ -n "$SRC_DIGEST" ] && [ "$SRC_DIGEST" == "$DEST_DIGEST" ]; then
-                echo "✅ 摘要一致 ($SRC_DIGEST)，无需同步。"
-                NEED_SYNC=false
+             DEST_INFO=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$ALI_TARGET" --format='{{.Digest}}|{{.Created}}' 2>/dev/null || echo "")
+             DEST_DIGEST=$(echo "$DEST_INFO" | cut -d'|' -f1)
+             DEST_CREATED=$(echo "$DEST_INFO" | cut -d'|' -f2)
+             
+             if [ -n "$SRC_DIGEST" ]; then
+                 if [ "$SRC_DIGEST" == "$DEST_DIGEST" ]; then
+                    echo "✅ 摘要一致 ($SRC_DIGEST)，无需同步。"
+                    NEED_SYNC=false
+                 elif [ -n "$DEST_DIGEST" ] && [ "$SRC_CREATED" == "$DEST_CREATED" ]; then
+                    echo "⚠️ 摘要不同但创建时间一致 ($SRC_CREATED)，判定为同源，跳过。"
+                    NEED_SYNC=false
+                 else
+                     echo "🚀 需同步: $SRC_DIGEST vs $DEST_DIGEST"
+                 fi
+             else
+                 echo "⚠️ 无法获取源摘要，跳过。"
+                 NEED_SYNC=false
              fi
           fi
 

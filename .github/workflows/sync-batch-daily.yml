@@ -68,6 +68,7 @@ jobs:
       - name: 📦 批量处理镜像
         run: |
           # 定义重试函数
+          # 定义重试函数
           function retry {
             local n=1
             local max=3
@@ -76,10 +77,10 @@ jobs:
               "$@" && break || {
                 if [[ $n -lt $max ]]; then
                   ((n++))
-                  echo "⚠️ 命令失败，偿试第 $n/$max 次重试..."
+                  echo "⚠️ 命令失败，偿试第 $n/$max 次重试..." >&2
                   sleep $delay;
                 else
-                  echo "❌ 命令在 $max 次尝试后失败。"
+                  echo "❌ 命令在 $max 次尝试后失败。" >&2
                   return 1
                 fi
               }
@@ -164,19 +165,32 @@ jobs:
             NEED_PULL=true
 
             if [ "$FORCE" != "true" ]; then
-               echo "🔍 比对 Digest ($SKOPEO_ARCH)..."
-               # 增加特定 retry 避免网络抖动误判
-               SRC_DIGEST=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$SRC_IMAGE" --format='{{.Digest}}' 2>/dev/null || echo "")
-               DEST_DIGEST=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$ALI_TARGET" --format='{{.Digest}}' 2>/dev/null || echo "")
+               echo "🔍 比对 Digest & Created ($SKOPEO_ARCH)..."
                
-               if [ -n "$SRC_DIGEST" ] && [ "$SRC_DIGEST" == "$DEST_DIGEST" ]; then
-                  echo "✅ 镜像与源端一致 ($SRC_DIGEST)，跳过。"
-                  NEED_PULL=false
+               # 获取源信息: Digest|Created
+               SRC_INFO=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$SRC_IMAGE" --format='{{.Digest}}|{{.Created}}' 2>/dev/null || echo "")
+               SRC_DIGEST=$(echo "$SRC_INFO" | cut -d'|' -f1)
+               SRC_CREATED=$(echo "$SRC_INFO" | cut -d'|' -f2)
+               
+               DEST_INFO=$(retry skopeo inspect $SKOPEO_FLAGS "docker://$ALI_TARGET" --format='{{.Digest}}|{{.Created}}' 2>/dev/null || echo "")
+               DEST_DIGEST=$(echo "$DEST_INFO" | cut -d'|' -f1)
+               DEST_CREATED=$(echo "$DEST_INFO" | cut -d'|' -f2)
+
+               if [ -n "$SRC_DIGEST" ]; then
+                   if [ "$SRC_DIGEST" == "$DEST_DIGEST" ]; then
+                       echo "✅ 镜像摘要一致 ($SRC_DIGEST)，跳过。"
+                       NEED_PULL=false
+                   elif [ -n "$DEST_DIGEST" ] && [ "$SRC_CREATED" == "$DEST_CREATED" ]; then
+                       echo "⚠️ 镜像摘要不同，但创建时间一致 ($SRC_CREATED)，判定为同源，跳过。"
+                       NEED_PULL=false
+                   else
+                       echo "🚀 镜像有更新 (Digest/Time不匹配)，准备同步。"
+                       echo "   源: $SRC_DIGEST ($SRC_CREATED)"
+                       echo "   目: $DEST_DIGEST ($DEST_CREATED)"
+                   fi
                else
-                  if [ -z "$SRC_DIGEST" ]; then
-                    echo "⚠️ 无法获取源镜像摘要，可能不存在或网络问题。"
-                  fi
-                  echo "🚀 摘要不一致或目标不存在，准备同步。"
+                   echo "⚠️ 无法获取源镜像信息，跳过。"
+                   NEED_PULL=false
                fi
             else
                echo "⚠️ 强制模式，跳过比对。"
