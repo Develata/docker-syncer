@@ -15,6 +15,8 @@ env:
   ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
   ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}
   WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+  # 映射 Secret 到 Env 以供 if 判断
+  DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
 
 jobs:
   batch-sync:
@@ -56,7 +58,7 @@ jobs:
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
       - name: 登录 DockerHub
-        if: secrets.DOCKERHUB_USERNAME != ''
+        if: env.DOCKERHUB_USER != ''
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -155,7 +157,7 @@ jobs:
                TARGET_TAG="${PLATFORM_PREFIX}_${TARGET_TAG}"
             fi
 
-            ALI_TARGET="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/$TARGET_TAG"
+            ALI_TARGET="$ALIYUN_REGISTRY/$ALIYUN_NAMESPACE/$TARGET_TAG"
             
             # 3. 摘要比对
             FORCE="${{ inputs.force_sync }}"
