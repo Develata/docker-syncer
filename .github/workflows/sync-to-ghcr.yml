@@ -24,6 +24,11 @@ on:
         type: boolean
         required: false
         default: false
+      clean_disk:
+        description: "清理磁盘空间 (减少空间不足风险，但耗时增加)"
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   mirror:
@@ -36,6 +41,7 @@ jobs:
       # 1. 空间清理 (防止大镜像爆盘)
       - name: 🗑️ 清理磁盘空间
         uses: easimon/maximize-build-space@master
+        if: ${{ inputs.clean_disk == true }}
         with:
           root-reserve-mb: 2048
           swap-size-mb: 128

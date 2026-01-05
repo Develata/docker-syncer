@@ -1,0 +1,25 @@
+# =================================================================
+# 镜像列表 (Images List)
+# =================================================================
+# 每一行代表一个需要同步的镜像。
+# 格式: [参数] <镜像名> [参数]
+#
+# 常用参数:
+#   --platform=<os>/<arch> : 指定架构 (如 linux/arm64)
+#
+# 示例:
+
+# 1. 普通镜像 (默认同步 linux/amd64)
+nginx:alpine
+redis:latest
+
+# 2. 指定架构 (如同步 linux/arm64 版本的 MySQL)
+#    注意: 对于 linux/arm64/v8，只需写 linux/arm64 即可
+--platform=linux/arm64 mysql:8.0
+
+# 3. 包含 Registry 的镜像 (同步后会保留路径结构或自动处理)
+gitea/gitea:latest
+bitnami/redis:latest
+
+# 4. 支持注释
+# python:3.9  <-- 这行会被忽略

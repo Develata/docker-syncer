@@ -29,8 +29,27 @@ jobs:
       contents: write
       packages: write
     steps:
+      - name: 读取配置 & 检查 Secrets
+        id: config
+        run: |
+          # 读取 config.env (如果存在)
+          if [ -f "config.env" ]; then
+             source config.env
+             echo "CLEAN_DISK_SPACE=${CLEAN_DISK_SPACE}" >> $GITHUB_OUTPUT
+             echo "SYNC_MODE=${SYNC_MODE}" >> $GITHUB_ENV
+          else
+             echo "CLEAN_DISK_SPACE=true" >> $GITHUB_OUTPUT
+             echo "SYNC_MODE=none" >> $GITHUB_ENV
+          fi
+
+          if [ -z "${{ secrets.ALIYUN_USERNAME }}" ] || [ -z "${{ secrets.ALIYUN_PASSWORD }}" ]; then
+            echo "❌ 错误: 未配置 ALIYUN_USERNAME 或 ALIYUN_PASSWORD Secrets。"
+            exit 1
+          fi
+
       - name: 🗑️ 清理磁盘空间
         uses: easimon/maximize-build-space@master
+        if: steps.config.outputs.CLEAN_DISK_SPACE == 'true'
         with:
           root-reserve-mb: 2048
           swap-size-mb: 128
@@ -43,13 +62,8 @@ jobs:
       - name: 重启 Docker 服务
         run: sudo service docker restart
 
-      - name: 检查 Secrets
-        run: |
-          if [ -z "${{ secrets.ALIYUN_USERNAME }}" ] || [ -z "${{ secrets.ALIYUN_PASSWORD }}" ]; then
-            echo "❌ 错误: 未配置 ALIYUN_USERNAME 或 ALIYUN_PASSWORDSecrets。"
-            echo "请在 Settings -> Secrets and variables -> Actions 中配置。"
-            exit 1
-          fi
+      # Secrets check moved to previous step
+
 
       - name: Checkout Code
         uses: actions/checkout@v3
@@ -98,8 +112,8 @@ jobs:
             done
           }
 
-          if [ ! -f "images.txt" ]; then
-            echo "❌ images.txt 不存在。"
+          if [ ! -s "images.txt" ]; then
+            echo "⚠️ images.txt 不存在或为空。"
             exit 0
           fi
 
@@ -114,29 +128,41 @@ jobs:
             echo "----------------------------------------"
             echo "🔄 处理指令: $line"
 
-            # 1. 解析参数
-            PLATFORM_ARG=""
-            SKOPEO_OS="linux"
-            SKOPEO_ARCH="amd64"
+            # 1. 提取镜像名和参数
+            # 策略: 移除所有以此开头参数 --xxxx=val 或 --xxxx val
+            # 但这比较复杂。简单策略: 
+            # 假设镜像名不以此 -- 开头。
+            # 我们可以遍历所有字段，找到那个不是参数的字段作为镜像名?
+            # 或者，更简单: 提取 --platform 部分，剩下的如果是 parameter flag 则忽略，否则就是 image
             
-            # 使用更健壮的正则匹配 platform
+            # Use regex to extract platform value anywhere in string
+            PLATFORM_VAL=""
             if [[ "$line" =~ --platform[=\ ]([^ ]+) ]]; then
-              PLATFORM_VAL="${BASH_REMATCH[1]}"
-              PLATFORM_ARG="--platform $PLATFORM_VAL"
-              echo "⚙️  指定架构: $PLATFORM_VAL"
-                 
-              if [[ "$PLATFORM_VAL" == *"/"* ]]; then
-                SKOPEO_OS=$(echo "$PLATFORM_VAL" | cut -d'/' -f1)
-                SKOPEO_ARCH=$(echo "$PLATFORM_VAL" | cut -d'/' -f2)
-              else
-                SKOPEO_ARCH="$PLATFORM_VAL"
-              fi
+                 PLATFORM_VAL="${BASH_REMATCH[1]}"
+            fi
+            
+            # Construct Platform Arg
+            if [ -n "$PLATFORM_VAL" ]; then
+                 PLATFORM_ARG="--platform $PLATFORM_VAL"
+                 echo "⚙️  指定架构: $PLATFORM_VAL"
+                 if [[ "$PLATFORM_VAL" == *"/"* ]]; then
+                    SKOPEO_OS=$(echo "$PLATFORM_VAL" | cut -d'/' -f1)
+                    SKOPEO_ARCH=$(echo "$PLATFORM_VAL" | cut -d'/' -f2)
+                 else
+                    SKOPEO_ARCH="$PLATFORM_VAL"
+                 fi
             fi
             
             SKOPEO_FLAGS="--override-os $SKOPEO_OS --override-arch $SKOPEO_ARCH"
 
-            # 提取镜像名（移除参数部分）
-            SRC_IMAGE=$(echo "$line" | awk '{print $NF}')
+            # 提取镜像名: 移除 --platform=xxx 或 --platform xxx
+            # 这里的处理方式:
+            # 1. 移除 --platform=xxx
+            # 2. 移除 --platform xxx
+            # 3. Trim
+            
+            TEMP_LINE=$(echo "$line" | sed -E 's/--platform[= ]+[^ ]+ //g' | sed -E 's/ --platform[= ]+[^ ]+//g')
+            SRC_IMAGE=$(echo "$TEMP_LINE" | xargs)
             
             # 2. 命名处理 (Smart Naming)
             # 提取 Scope (namespace) 和 Basename
@@ -170,14 +196,7 @@ jobs:
             fi
 
             # 4. 读取配置与模式判定
-            if [ -f "config.env" ]; then
-                source config.env
-            fi
-            
-            # 如果 inputs.force_sync 为 true，则不需要 source config.env? 不，mode 还是需要的
-            # 优先使用 workflow_dispatch 的输入（如果有），否则使用 config.env
-            # 但当前 workflow_dispatch 没有 sync_mode 输入，所以依赖 config.env
-            
+            # 使用之前 ENV 设置的 SYNC_MODE
             MODE="${SYNC_MODE:-none}"
             
             echo "Current Sync Mode: $MODE"
