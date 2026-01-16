@@ -160,8 +160,18 @@ jobs:
             SKOPEO_FLAGS="--override-os $SKOPEO_OS --override-arch $SKOPEO_ARCH"
 
             # ⚡ 改进：更健壮地提取镜像名（移除所有 --开头的参数）
-            # 先移除 --platform 及其值，然后移除其他可能的参数
-            TEMP_LINE=$(echo "$line" | sed -E 's/--platform[= ][^ ]+//g' | sed -E 's/--[a-z-]+[= ][^ ]+//g')
+            # 支持三种参数格式：
+            # 1. 带值参数（=格式）：--platform=linux/arm64
+            # 2. 带值参数（空格格式）：--platform linux/arm64
+            # 3. 无值参数（布尔标志）：--disable-content-trust --pull-always
+            # 使用多次 sed 确保彻底清理所有参数格式
+            TEMP_LINE="$line"
+            # 第1步：移除 --xxx=value 格式
+            TEMP_LINE=$(echo "$TEMP_LINE" | sed -E 's/--[a-z-]+=[^ ]+//g')
+            # 第2步：移除 --xxx value 格式（注意保留镜像名）
+            TEMP_LINE=$(echo "$TEMP_LINE" | sed -E 's/--[a-z-]+ +[^ ]+//g')
+            # 第3步：移除剩余的无值参数 --xxx
+            TEMP_LINE=$(echo "$TEMP_LINE" | sed -E 's/--[a-z-]+//g')
             SRC_IMAGE=$(echo "$TEMP_LINE" | xargs)
             
             # 2. 命名处理 (Smart Naming)
@@ -176,9 +186,10 @@ jobs:
             IMAGE_PATH="$SRC_IMAGE"
             
             # 提取 registry 域名（如果存在）
-            if [[ "$SRC_IMAGE" == *"."*"/"* ]]; then
-                # 包含域名，如 quay.io/coreos/etcd
-                REGISTRY_PREFIX=$(echo "$SRC_IMAGE" | cut -d'/' -f1 | sed 's/\./-/g')
+            # 支持带端口号的私有Registry：192.168.1.100:5000 → 192-168-1-100-5000
+            if [[ "$SRC_IMAGE" == *"."*"/"* ]] || [[ "$SRC_IMAGE" == *":"*"/"* ]]; then
+                # 包含域名，如 quay.io/coreos/etcd 或 192.168.1.100:5000/my-app
+                REGISTRY_PREFIX=$(echo "$SRC_IMAGE" | cut -d'/' -f1 | sed 's/[\.]/-/g' | sed 's/:/-/g')
                 IMAGE_PATH=$(echo "$SRC_IMAGE" | cut -d'/' -f2-)
             fi
             
@@ -314,7 +325,7 @@ jobs:
             # 6. 执行同步
             if [ "$NEED_PULL" == "true" ]; then
                echo "📥 拉取 $SRC_IMAGE ..."
-               retry docker pull $SRC_IMAGE $PLATFORM_ARG
+               retry docker pull "$SRC_IMAGE" $PLATFORM_ARG
                
                # 推送 Aliyun
                if [ "$PUSH_ALI" == "true" ]; then

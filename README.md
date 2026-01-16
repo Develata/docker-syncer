@@ -87,6 +87,42 @@ nginx:alpine
 bitnami/redis:latest
 ```
 
+**⚠️ 重要：参数使用规范**
+1. **推荐格式**：参数写在镜像名**后面**
+   ```text
+   # ✅ 推荐 - 镜像名在前，参数在后
+   mysql:8.0 --platform=linux/arm64
+   nginx:alpine --disable-content-trust
+   redis:7.2 --platform=linux/arm64 --pull-always
+   ```
+
+2. **支持格式**：参数也可以写在镜像名**前面**（已优化支持）
+   ```text
+   # ✅ 支持 - 参数在前（但不推荐）
+   --platform=linux/arm64 mysql:8.0
+   --disable-content-trust nginx:alpine
+   ```
+
+3. **参数格式类型**：
+   - **带值参数**（等号格式）：`--platform=linux/arm64`
+   - **带值参数**（空格格式）：`--platform linux/arm64`
+   - **无值参数**（布尔标志）：`--disable-content-trust` `--pull-always` `--no-cache`
+
+4. **不支持的写法**：
+   ```text
+   # ❌ 错误 - 多个镜像写在一行
+   nginx:alpine redis:7.2
+   
+   # ❌ 错误 - 参数值包含空格但未加引号
+   --label description=my app
+   ```
+
+5. **最佳实践**：
+   - 每行只写一个镜像
+   - 镜像名始终在前，参数在后
+   - 仅使用脚本明确支持的参数（主要是 `--platform`）
+   - 其他 docker 参数（如 `--disable-content-trust`）会被自动过滤，不影响同步
+
 ### 2. 双重同步 (`02. Double Sync`)
 *   **适用场景**：临时手动同步一个镜像，同时推送到 阿里云 和 GHCR。
 *   **特点**：三方比对（源 vs 阿里 vs GHCR），智能判断哪一方需要更新。
@@ -115,7 +151,26 @@ bitnami/redis:latest
 **问**：镜像名是 `linux/arm64/v8`，我该怎么写？
 **答**：只需要写 `--platform=linux/arm64` 即可。Docker 引擎会自动协商最匹配的变体 (Variant)。不需要显式写 `/v8`，否则可能会报错。
 
-### Q3: 为什么 GHCR 403 Forbidden?
+### Q3: 为什么有些参数被忽略了？
+**问**：我在 `images.txt` 中写了 `nginx:latest --disable-content-trust`，但参数好像没生效？
+**答**：这是正常的。脚本会自动**过滤掉所有参数**，只提取镜像名。目前只有 `--platform` 参数会被解析和使用。其他参数（如 `--disable-content-trust`）会被安全地移除，不会影响同步过程。
+
+### Q4: images.txt 中参数的正确写法
+**最佳实践**：
+```text
+# ✅ 推荐 - 镜像名在前
+mysql:8.0 --platform=linux/arm64
+nginx:alpine
+
+# ✅ 也支持 - 参数在前（已优化）
+--platform=linux/arm64 mysql:8.0
+
+# ❌ 避免 - 复杂的参数组合
+mysql:8.0 --platform linux/arm64 --pull-always --no-cache
+```
+**说明**：虽然脚本已优化支持参数在前后的各种情况，但为了提高可读性，建议统一使用"镜像名在前，参数在后"的格式。
+
+### Q5: 为什么 GHCR 403 Forbidden?
 1.  确保在 GitHub 个人设置 -> Developer Settings 开启了 `write:packages` 权限（如果是用 Token）。
 2.  本 Actions 默认使用 `${{ secrets.GITHUB_TOKEN }}`，请检查仓库 Settings -> Actions -> General -> **Workflow permissions** 必须设为 **Read and write permissions**。
 

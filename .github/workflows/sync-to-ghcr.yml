@@ -129,9 +129,10 @@ jobs:
              IMAGE_PATH="$SRC_IMAGE"
              
              # 提取 registry 域名（如果存在）
-             if [[ "$SRC_IMAGE" == *"."*"/"* ]]; then
-                 # 包含域名，如 quay.io/coreos/etcd
-                 REGISTRY_PREFIX=$(echo "$SRC_IMAGE" | cut -d'/' -f1 | sed 's/\./-/g')
+             # 支持带端口号的私有Registry：192.168.1.100:5000 → 192-168-1-100-5000
+             if [[ "$SRC_IMAGE" == *"."*"/"* ]] || [[ "$SRC_IMAGE" == *":"*"/"* ]]; then
+                 # 包含域名，如 quay.io/coreos/etcd 或 192.168.1.100:5000/my-app
+                 REGISTRY_PREFIX=$(echo "$SRC_IMAGE" | cut -d'/' -f1 | sed 's/[\.]/-/g' | sed 's/:/-/g')
                  IMAGE_PATH=$(echo "$SRC_IMAGE" | cut -d'/' -f2-)
              fi
              
@@ -206,13 +207,13 @@ jobs:
              retry docker pull "$SRC_IMAGE" $PLATFORM_ARG
 
              echo "🏷️ 打标签: $FULL_TARGET"
-             docker tag $SRC_IMAGE $FULL_TARGET
+             docker tag "$SRC_IMAGE" "$FULL_TARGET"
 
              echo "📤 推送: $FULL_TARGET"
              retry docker push "$FULL_TARGET"
              
              echo "🧹 清理..."
-             docker rmi $SRC_IMAGE $FULL_TARGET || true
+             docker rmi "$SRC_IMAGE" "$FULL_TARGET" || true
 
              echo "✅ 完成! docker pull $FULL_TARGET"
           fi

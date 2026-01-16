@@ -1,1 +1,52 @@
+# 本地环境变量文件
+.env
+.env.local
+.env.*.local
+*.env.local
+
+# 本地测试文件
+test-*.txt
+local-images.txt
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# IDE 配置文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 日志文件
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 1. Go 语言相关 (如果你打算用 Go 重写)
+# 编译生成的二进制文件 (通常没有后缀，或者是 .exe)
+main
+main.exe
+docker-syncer
+docker-syncer.exe
+*.test
+*.out
+
+# 2. Python 相关 (未来可能的辅助脚本)
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+
+# 3. 临时文件和备份
+*.bak
+*.tmp
+*.temp
+
+# 4. Repomix 可能产生的其他临时文件
+repomix-output.json
+repomix-output.txt
 repomix-output.xml
