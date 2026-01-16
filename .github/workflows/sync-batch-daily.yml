@@ -31,7 +31,7 @@ jobs:
     steps:
       # 🔥 关键修复：必须先 Checkout 代码，才能读取 config.env
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       # 🔧 Skopeo 依赖检查
       - name: 检查和安装 Skopeo
         run: |
