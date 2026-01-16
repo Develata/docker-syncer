@@ -38,10 +38,37 @@ jobs:
       packages: write # 必须权限
 
     steps:
+      # 🔥 关键修复：先 Checkout 代码，才能读取 config.env
+      - name: Checkout 代码
+        uses: actions/checkout@v4
+
+      - name: 读取 config.env 配置
+        id: config
+        run: |
+          if [ -f "config.env" ]; then
+            echo "读取 config.env 配置..."
+            source config.env
+            echo "CLEAN_DISK_SPACE=$CLEAN_DISK_SPACE" >> $GITHUB_ENV
+            echo "✅ 配置加载成功 (CLEAN_DISK_SPACE=$CLEAN_DISK_SPACE)"
+          else
+            echo "⚠️ 未找到 config.env，使用默认配置"
+            echo "CLEAN_DISK_SPACE=${{ inputs.clean_disk }}" >> $GITHUB_ENV
+          fi
+
+      # 🔧 Skopeo 依赖检查
+      - name: 检查和安装 Skopeo
+        run: |
+          if ! command -v skopeo &> /dev/null; then
+            echo "Skopeo not found, installing..."
+            sudo apt-get update && sudo apt-get install -y skopeo
+          else
+            echo "✅ Skopeo 已安装: $(skopeo --version)"
+          fi
+
       # 1. 空间清理 (防止大镜像爆盘)
       - name: 🗑️ 清理磁盘空间
         uses: easimon/maximize-build-space@master
-        if: ${{ inputs.clean_disk == true }}
+        if: env.CLEAN_DISK_SPACE == 'true'
         with:
           root-reserve-mb: 2048
           swap-size-mb: 128

@@ -29,6 +29,18 @@ jobs:
       contents: write
       packages: write
     steps:
+      # 🔥 关键修复：必须先 Checkout 代码，才能读取 config.env
+      - name: Checkout Code
+        uses: actions/checkout@v3
+      # 🔧 Skopeo 依赖检查
+      - name: 检查和安装 Skopeo
+        run: |
+          if ! command -v skopeo &> /dev/null; then
+            echo "Skopeo not found, installing..."
+            sudo apt-get update && sudo apt-get install -y skopeo
+          else
+            echo "✅ Skopeo 已安装: $(skopeo --version)"
+          fi
       - name: 读取配置 & 检查 Secrets
         id: config
         env:
@@ -65,12 +77,6 @@ jobs:
 
       - name: 重启 Docker 服务
         run: sudo service docker restart
-
-      # Secrets check moved to previous step
-
-
-      - name: Checkout Code
-        uses: actions/checkout@v3
 
       - name: 登录阿里云 ACR
         uses: docker/login-action@v2
@@ -374,7 +380,15 @@ jobs:
             git config --local user.email "action@github.com"
             git config --local user.name "GitHub Action"
             git commit -am "docs: update last sync badge [skip ci]"
-            git push
+            
+            # 🔥 防止并发冲突：先拉取最新代码
+            git pull --rebase origin main || {
+              echo "⚠️ Rebase 失败，尝试使用 merge 策略"
+              git pull --no-rebase origin main
+            }
+            
+            # 🔥 防止 Detached HEAD：明确推送到 main 分支
+            git push origin HEAD:main
           else
              echo "没有变更需要提交。"
           fi
