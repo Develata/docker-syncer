@@ -59,8 +59,12 @@ jobs:
         run: sudo service docker restart
 
       - name: 检查 Secrets
+        env:
+          # 🔒 安全修复：先将 Secrets 映射为环境变量
+          ALI_USER: ${{ secrets.ALIYUN_USERNAME }}
+          ALI_PASS: ${{ secrets.ALIYUN_PASSWORD }}
         run: |
-          if [ -z "${{ secrets.ALIYUN_USERNAME }}" ] || [ -z "${{ secrets.ALIYUN_PASSWORD }}" ]; then
+          if [ -z "$ALI_USER" ] || [ -z "$ALI_PASS" ]; then
             echo "❌ 错误: 未配置 ALIYUN_USERNAME 或 ALIYUN_PASSWORDSecrets。"
             echo "请在 Settings -> Secrets and variables -> Actions 中配置。"
             exit 1

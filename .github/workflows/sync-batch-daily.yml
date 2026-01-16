@@ -31,6 +31,10 @@ jobs:
     steps:
       - name: 读取配置 & 检查 Secrets
         id: config
+        env:
+          # 🔒 安全修复：先将 Secrets 映射为环境变量，避免直接注入脚本
+          ALI_USER: ${{ secrets.ALIYUN_USERNAME }}
+          ALI_PASS: ${{ secrets.ALIYUN_PASSWORD }}
         run: |
           # 读取 config.env (如果存在)
           if [ -f "config.env" ]; then
@@ -42,7 +46,7 @@ jobs:
              echo "SYNC_MODE=none" >> $GITHUB_ENV
           fi
 
-          if [ -z "${{ secrets.ALIYUN_USERNAME }}" ] || [ -z "${{ secrets.ALIYUN_PASSWORD }}" ]; then
+          if [ -z "$ALI_USER" ] || [ -z "$ALI_PASS" ]; then
             echo "❌ 错误: 未配置 ALIYUN_USERNAME 或 ALIYUN_PASSWORD Secrets。"
             exit 1
           fi
@@ -120,6 +124,12 @@ jobs:
           echo "📋 开始批量处理..."
 
           while IFS= read -r line || [ -n "$line" ]; do
+            # 🛑 关键修复：在每次循环开始时重置所有变量，防止状态泄露
+            SKOPEO_OS="linux"
+            SKOPEO_ARCH="amd64"
+            PLATFORM_VAL=""
+            PLATFORM_ARG=""
+            
             # 去除首尾空白
             line=$(echo "$line" | xargs)
             # 跳过空行和注释
@@ -129,22 +139,15 @@ jobs:
             echo "🔄 处理指令: $line"
 
             # 1. 提取镜像名和参数
-            # 策略: 移除所有以此开头参数 --xxxx=val 或 --xxxx val
-            # 但这比较复杂。简单策略: 
-            # 假设镜像名不以此 -- 开头。
-            # 我们可以遍历所有字段，找到那个不是参数的字段作为镜像名?
-            # 或者，更简单: 提取 --platform 部分，剩下的如果是 parameter flag 则忽略，否则就是 image
+            # ⚡ 改进：使用更健壮的正则表达式处理
             
-            # Use regex to extract platform value anywhere in string
-            PLATFORM_VAL=""
+            # 提取 platform 参数值（支持 --platform=value 和 --platform value 两种格式）
             if [[ "$line" =~ --platform[=\ ]([^ ]+) ]]; then
                  PLATFORM_VAL="${BASH_REMATCH[1]}"
-            fi
-            
-            # Construct Platform Arg
-            if [ -n "$PLATFORM_VAL" ]; then
                  PLATFORM_ARG="--platform $PLATFORM_VAL"
                  echo "⚙️  指定架构: $PLATFORM_VAL"
+                 
+                 # 解析 OS 和 ARCH
                  if [[ "$PLATFORM_VAL" == *"/"* ]]; then
                     SKOPEO_OS=$(echo "$PLATFORM_VAL" | cut -d'/' -f1)
                     SKOPEO_ARCH=$(echo "$PLATFORM_VAL" | cut -d'/' -f2)
@@ -153,37 +156,50 @@ jobs:
                  fi
             fi
             
+            # ⚠️ 关键修复：确保 Skopeo 始终使用正确的架构参数
             SKOPEO_FLAGS="--override-os $SKOPEO_OS --override-arch $SKOPEO_ARCH"
 
-            # 提取镜像名: 移除 --platform=xxx 或 --platform xxx
-            # 这里的处理方式:
-            # 1. 移除 --platform=xxx
-            # 2. 移除 --platform xxx
-            # 3. Trim
-            
-            TEMP_LINE=$(echo "$line" | sed -E 's/--platform[= ]+[^ ]+ //g' | sed -E 's/ --platform[= ]+[^ ]+//g')
+            # ⚡ 改进：更健壮地提取镜像名（移除所有 --开头的参数）
+            # 先移除 --platform 及其值，然后移除其他可能的参数
+            TEMP_LINE=$(echo "$line" | sed -E 's/--platform[= ][^ ]+//g' | sed -E 's/--[a-z-]+[= ][^ ]+//g')
             SRC_IMAGE=$(echo "$TEMP_LINE" | xargs)
             
             # 2. 命名处理 (Smart Naming)
-            # 提取 Scope (namespace) 和 Basename
-            # Logic: bitnami/redis -> Scope: bitnami, Base: redis
-            #        redis -> Scope: "", Base: redis
-            #        library/redis -> Scope: "", Base: redis
+            # 📄 改进：添加 registry 域名前缀以避免命名冲突
+            # Logic: quay.io/coreos/etcd -> quay-io_coreos_etcd
+            #        gcr.io/google_containers/etcd -> gcr-io_google_containers_etcd
+            #        bitnami/redis -> bitnami_redis
+            #        redis -> redis
             
+            REGISTRY_PREFIX=""
             SCOPE=""
-            BASE_NAME=$(basename "$SRC_IMAGE" | cut -d':' -f1)
-            TAG_NAME=$(echo "$SRC_IMAGE" | cut -d':' -f2 -s)
+            IMAGE_PATH="$SRC_IMAGE"
+            
+            # 提取 registry 域名（如果存在）
+            if [[ "$SRC_IMAGE" == *"."*"/"* ]]; then
+                # 包含域名，如 quay.io/coreos/etcd
+                REGISTRY_PREFIX=$(echo "$SRC_IMAGE" | cut -d'/' -f1 | sed 's/\./-/g')
+                IMAGE_PATH=$(echo "$SRC_IMAGE" | cut -d'/' -f2-)
+            fi
+            
+            BASE_NAME=$(basename "$IMAGE_PATH" | cut -d':' -f1)
+            TAG_NAME=$(echo "$IMAGE_PATH" | cut -d':' -f2 -s)
             [ -z "$TAG_NAME" ] && TAG_NAME="latest"
             
             # 简单解析 namespace
-            if [[ "$SRC_IMAGE" == *"/"* ]]; then
-                NAMESPACE_PART=$(dirname "$SRC_IMAGE")
+            if [[ "$IMAGE_PATH" == *"/"* ]]; then
+                NAMESPACE_PART=$(dirname "$IMAGE_PATH")
                 if [[ "$NAMESPACE_PART" != "library" && "$NAMESPACE_PART" != "." ]]; then
                    SCOPE=$(basename "$NAMESPACE_PART")
                 fi
             fi
             
-            if [ -n "$SCOPE" ]; then
+            # 组合命名：[registry_][scope_]basename:tag
+            if [ -n "$REGISTRY_PREFIX" ] && [ -n "$SCOPE" ]; then
+               TARGET_TAG="${REGISTRY_PREFIX}_${SCOPE}_${BASE_NAME}:${TAG_NAME}"
+            elif [ -n "$REGISTRY_PREFIX" ]; then
+               TARGET_TAG="${REGISTRY_PREFIX}_${BASE_NAME}:${TAG_NAME}"
+            elif [ -n "$SCOPE" ]; then
                TARGET_TAG="${SCOPE}_${BASE_NAME}:${TAG_NAME}"
             else
                TARGET_TAG="${BASE_NAME}:${TAG_NAME}"

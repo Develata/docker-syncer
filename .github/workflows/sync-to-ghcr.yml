@@ -120,18 +120,45 @@ jobs:
           SKOPEO_FLAGS="--override-os $SKOPEO_OS --override-arch $SKOPEO_ARCH"
 
           # --- 2. 目标名称计算 (智能前缀) ---
+          # 📄 改进：添加 registry 域名前缀以避免命名冲突
           if [ -n "$INPUT_TARGET" ]; then
             TARGET_TAG="$INPUT_TARGET"
           else
-             SCOPE=$(echo "$SRC_IMAGE" | awk -F'/' '{if (NF>2) print $(NF-1); else if (NF==2 && $1!="library") print $1; else print ""}')
-             BASE_NAME=$(echo "$SRC_IMAGE" | awk -F'/' '{print $NF}')
+             REGISTRY_PREFIX=""
+             SCOPE=""
+             IMAGE_PATH="$SRC_IMAGE"
              
-             if [ -n "$SCOPE" ]; then
-                TARGET_TAG="${SCOPE}_${BASE_NAME}"
-             else
-                TARGET_TAG="${BASE_NAME}"
+             # 提取 registry 域名（如果存在）
+             if [[ "$SRC_IMAGE" == *"."*"/"* ]]; then
+                 # 包含域名，如 quay.io/coreos/etcd
+                 REGISTRY_PREFIX=$(echo "$SRC_IMAGE" | cut -d'/' -f1 | sed 's/\./-/g')
+                 IMAGE_PATH=$(echo "$SRC_IMAGE" | cut -d'/' -f2-)
              fi
              
+             BASE_NAME=$(basename "$IMAGE_PATH" | cut -d':' -f1)
+             TAG_NAME=$(echo "$IMAGE_PATH" | cut -d':' -f2 -s)
+             [ -z "$TAG_NAME" ] && TAG_NAME="latest"
+             
+             # 解析 namespace
+             if [[ "$IMAGE_PATH" == *"/"* ]]; then
+                 NAMESPACE_PART=$(dirname "$IMAGE_PATH")
+                 if [[ "$NAMESPACE_PART" != "library" && "$NAMESPACE_PART" != "." ]]; then
+                    SCOPE=$(basename "$NAMESPACE_PART")
+                 fi
+             fi
+             
+             # 组合命名：[registry_][scope_]basename:tag
+             if [ -n "$REGISTRY_PREFIX" ] && [ -n "$SCOPE" ]; then
+                TARGET_TAG="${REGISTRY_PREFIX}_${SCOPE}_${BASE_NAME}:${TAG_NAME}"
+             elif [ -n "$REGISTRY_PREFIX" ]; then
+                TARGET_TAG="${REGISTRY_PREFIX}_${BASE_NAME}:${TAG_NAME}"
+             elif [ -n "$SCOPE" ]; then
+                TARGET_TAG="${SCOPE}_${BASE_NAME}:${TAG_NAME}"
+             else
+                TARGET_TAG="${BASE_NAME}:${TAG_NAME}"
+             fi
+             
+             # 多架构前缀追加
              if [ -n "$INPUT_PLATFORM" ]; then
                 PLAT_PREFIX=$(echo "$INPUT_PLATFORM" | sed 's/\//_/g')
                 TARGET_TAG="${PLAT_PREFIX}_${TARGET_TAG}"
