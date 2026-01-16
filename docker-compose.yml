@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  syncer-dev:
+    # 基于当前目录的 Dockerfile 构建
+    build: .
+    container_name: syncer-local-test
+    
+    # 挂载宿主机的 Docker 套接字 (关键：实现 Docker in Docker)
+    volumes:
+      - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    
+    # 直接加载你填好的环境变量文件
+    env_file:
+      - .env.local
+    
+    # 保持容器运行，方便你随时进入测试
+    command: tail -f /dev/null
+    
+    # 确保有权限操作 Docker
+    user: root
