@@ -5,7 +5,7 @@ on:
     paths:
       - "images.txt"
   schedule:
-    - cron: "0 0 1,17 * *"
+    - cron: "0 0 1,20 * *"
   workflow_dispatch:
     inputs:
       force_sync:
