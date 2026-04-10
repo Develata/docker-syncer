@@ -41,15 +41,16 @@ jobs:
       - name: 读取 config.env 配置
         id: config
         run: |
+          CLEAN_DISK_SPACE="${{ inputs.clean_disk }}"
           if [ -f "config.env" ]; then
             echo "读取 config.env 配置..."
             source config.env
-            echo "CLEAN_DISK_SPACE=$CLEAN_DISK_SPACE" >> $GITHUB_ENV
-            echo "✅ 配置加载成功 (CLEAN_DISK_SPACE=$CLEAN_DISK_SPACE)"
+            echo "ℹ️ 手动工作流优先使用输入参数 clean_disk=$CLEAN_DISK_SPACE"
           else
-            echo "⚠️ 未找到 config.env，使用默认配置"
-            echo "CLEAN_DISK_SPACE=${{ inputs.clean_disk }}" >> $GITHUB_ENV
+            echo "⚠️ 未找到 config.env，使用工作流输入"
           fi
+          echo "CLEAN_DISK_SPACE=$CLEAN_DISK_SPACE" >> $GITHUB_ENV
+          echo "✅ 配置加载成功 (CLEAN_DISK_SPACE=$CLEAN_DISK_SPACE)"
 
       # 🔧 Skopeo 依赖检查
       - name: 检查和安装 Skopeo
@@ -165,9 +166,9 @@ jobs:
              if [[ "$IMAGE_PATH" == *"/"* ]]; then
                  NAMESPACE_PART=$(dirname "$IMAGE_PATH")
                  if [[ "$NAMESPACE_PART" != "library" && "$NAMESPACE_PART" != "." ]]; then
-                    SCOPE=$(basename "$NAMESPACE_PART")
+                    SCOPE=$(echo "$NAMESPACE_PART" | sed 's/\//_/g')
                  fi
-             fi
+              fi
              
              # 组合命名
              if [ -n "$REGISTRY_PREFIX" ] && [ -n "$SCOPE" ]; then
@@ -220,7 +221,7 @@ jobs:
           # 4. 拉取与推送
           if [ "$NEED_SYNC" == "true" ]; then
              echo "📥 Pulling $SRC_IMAGE ..."
-             retry docker pull "$SRC_IMAGE" $PLATFORM_ARG
+             retry docker pull $PLATFORM_ARG "$SRC_IMAGE"
              
              echo "🏷️ Tagging as $ALI_TARGET ..."
              docker tag "$SRC_IMAGE" "$ALI_TARGET"

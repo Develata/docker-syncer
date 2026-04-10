@@ -52,13 +52,24 @@ jobs:
           if [ -f "config.env" ]; then
              source config.env
              echo "CLEAN_DISK_SPACE=${CLEAN_DISK_SPACE}" >> $GITHUB_OUTPUT
+             echo "SYNC_MODE=${SYNC_MODE}" >> $GITHUB_OUTPUT
              echo "SYNC_MODE=${SYNC_MODE}" >> $GITHUB_ENV
           else
              echo "CLEAN_DISK_SPACE=true" >> $GITHUB_OUTPUT
+             echo "SYNC_MODE=none" >> $GITHUB_OUTPUT
              echo "SYNC_MODE=none" >> $GITHUB_ENV
           fi
 
-          if [ -z "$ALI_USER" ] || [ -z "$ALI_PASS" ]; then
+          case "${SYNC_MODE:-none}" in
+            aliyun|double)
+              REQUIRE_ALIYUN=true
+              ;;
+            *)
+              REQUIRE_ALIYUN=false
+              ;;
+          esac
+
+          if [ "$REQUIRE_ALIYUN" = "true" ] && { [ -z "$ALI_USER" ] || [ -z "$ALI_PASS" ]; }; then
             echo "❌ 错误: 未配置 ALIYUN_USERNAME 或 ALIYUN_PASSWORD Secrets。"
             exit 1
           fi
@@ -79,6 +90,7 @@ jobs:
         run: sudo service docker restart
 
       - name: 登录阿里云 ACR
+        if: steps.config.outputs.SYNC_MODE == 'aliyun' || steps.config.outputs.SYNC_MODE == 'double'
         uses: docker/login-action@v2
         with:
           registry: ${{ env.ALIYUN_REGISTRY }}
@@ -86,6 +98,7 @@ jobs:
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
       - name: 登录 GHCR
+        if: steps.config.outputs.SYNC_MODE == 'ghcr' || steps.config.outputs.SYNC_MODE == 'double'
         uses: docker/login-action@v2
         with:
           registry: ${{ env.GHCR_REGISTRY }}
@@ -206,9 +219,9 @@ jobs:
             if [[ "$IMAGE_PATH" == *"/"* ]]; then
                 NAMESPACE_PART=$(dirname "$IMAGE_PATH")
                 if [[ "$NAMESPACE_PART" != "library" && "$NAMESPACE_PART" != "." ]]; then
-                   SCOPE=$(basename "$NAMESPACE_PART")
+                   SCOPE=$(echo "$NAMESPACE_PART" | sed 's/\//_/g')
                 fi
-            fi
+             fi
             
             # 组合命名：[registry_][scope_]basename:tag
             if [ -n "$REGISTRY_PREFIX" ] && [ -n "$SCOPE" ]; then
@@ -330,7 +343,7 @@ jobs:
             # 6. 执行同步
             if [ "$NEED_PULL" == "true" ]; then
                echo "📥 拉取 $SRC_IMAGE ..."
-               retry docker pull "$SRC_IMAGE" $PLATFORM_ARG
+               retry docker pull $PLATFORM_ARG "$SRC_IMAGE"
                
                # 推送 Aliyun
                if [ "$PUSH_ALI" == "true" ]; then

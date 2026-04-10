@@ -112,6 +112,9 @@ sync_single_image() {
     local src_image=$1
     local mode=$2
     local dry_run=$3
+
+    # 兼容 Windows CRLF，避免镜像名尾部残留 \r 污染日志和 docker 命令
+    src_image="${src_image%$'\r'}"
     
     log_info "开始同步镜像: $src_image"
     log_info "同步模式: $mode"
@@ -165,6 +168,28 @@ sync_single_image() {
     fi
     
     log_success "镜像同步完成！"
+}
+
+# 批量同步镜像
+sync_batch_images() {
+    local mode=$1
+    local dry_run=$2
+    local file_path="images.txt"
+
+    if [ ! -f "$file_path" ]; then
+        log_error "$file_path 文件不存在！"
+        exit 1
+    fi
+
+    log_info "开始批量同步，镜像列表: $file_path"
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        line=$(echo "$line" | xargs)
+        [ -z "$line" ] && continue
+        [[ "$line" =~ ^# ]] && continue
+        sync_single_image "$line" "$mode" "$dry_run"
+        echo
+    done < "$file_path"
 }
 
 # 显示帮助信息
@@ -284,8 +309,7 @@ fi
 if [ "$TEST_MODE" == "single" ]; then
     sync_single_image "$TEST_IMAGE" "$MODE" "$DRY_RUN"
 elif [ "$TEST_MODE" == "batch" ]; then
-    log_error "批量同步模式尚未实现，请使用 --single 模式"
-    exit 1
+    sync_batch_images "$MODE" "$DRY_RUN"
 fi
 
 log_success "========================================"
