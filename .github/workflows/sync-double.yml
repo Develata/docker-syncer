@@ -26,6 +26,7 @@ on:
         default: false
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   # 阿里云配置
   ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
   ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}
@@ -45,7 +46,7 @@ jobs:
     steps:
       # 🔥 关键修复：先 Checkout 代码，才能读取 config.env
       - name: Checkout 代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 读取 config.env 配置
         id: config
@@ -101,21 +102,21 @@ jobs:
       # 2. 登录流程 (3方登录)
       - name: 登录 DockerHub (避免限流)
         if: env.DOCKERHUB_USER != ''
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
         continue-on-error: true
 
       - name: 登录阿里云
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.ALIYUN_REGISTRY }}
           username: ${{ secrets.ALIYUN_USERNAME }}
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
       - name: 登录 GHCR
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.GHCR_REGISTRY }}
           username: ${{ github.actor }}

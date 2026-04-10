@@ -1,5 +1,6 @@
 name: 03. 单项同步 (To Aliyun)
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
   ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
   ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}
@@ -36,7 +37,7 @@ jobs:
     steps:
       # 🔥 关键修复：先 Checkout 代码，才能读取 config.env
       - name: Checkout 代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 读取 config.env 配置
         id: config
@@ -90,7 +91,7 @@ jobs:
           fi
 
       - name: 登录阿里云 ACR
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.ALIYUN_REGISTRY }}
           username: ${{ secrets.ALIYUN_USERNAME }}
