@@ -1,5 +1,5 @@
 golang:latest
-docker.io/zefhemel/silverbullet:latest
 openlistteam/openlist:latest
 easytier/easytier:latest
 ghcr.io/komari-monitor/komari-agent:latest
+mzz2017/v2raya:latest
