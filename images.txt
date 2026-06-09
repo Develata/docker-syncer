@@ -5,5 +5,5 @@ ghcr.io/komari-monitor/komari-agent:latest
 mzz2017/v2raya:latest
 nginx:latest
 openresty/openresty:latest
-ghcr.io/astrbotdev/astrbot:latest
+soulter/astrbot:latest
 calciumion/new-api:latest
