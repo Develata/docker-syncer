@@ -17,7 +17,7 @@
 
 ---
 
-![Last Sync](https://img.shields.io/badge/last%20sync-2026--06--10%2000:20:01-green)
+![Last Sync](https://img.shields.io/badge/last%20sync-2026--06--11%2011:23:16-green)
 
 ## ⚡ 快速开始 (Quick Start)
 
