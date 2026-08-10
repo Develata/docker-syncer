@@ -7,3 +7,4 @@ nginx:latest
 openresty/openresty:latest
 soulter/astrbot:latest
 calciumion/new-api:latest
+ghcr.io/sagernet/sing-box:latest
