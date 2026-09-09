@@ -1,0 +1,100 @@
+name: Sync images
+
+on:
+  schedule:
+    - cron: "0 0 1,11,21 * *"
+  push:
+    branches: [main]
+    paths:
+      - images.txt
+      - syncer.json
+  workflow_dispatch:
+    inputs:
+      image_name:
+        description: "源镜像；留空时批量读取 images.txt"
+        required: false
+        type: string
+        default: ""
+      mode:
+        description: "同步目标；config 表示遵循配置/环境变量"
+        required: true
+        type: choice
+        options: [config, aliyun, ghcr, double, none]
+        default: config
+      platform:
+        description: "平台，例如 linux/arm64；留空遵循配置"
+        required: false
+        type: string
+        default: ""
+      target_name:
+        description: "显式目标名（仅单镜像）"
+        required: false
+        type: string
+        default: ""
+      force_sync:
+        description: "跳过目标一致性检查"
+        required: false
+        type: boolean
+        default: false
+      dry_run:
+        description: "离线校验计划，不登录或访问 Registry"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-syncer-publication
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      INPUT_IMAGE: ${{ inputs.image_name }}
+      INPUT_MODE: ${{ inputs.mode }}
+      INPUT_PLATFORM: ${{ inputs.platform }}
+      INPUT_TARGET_NAME: ${{ inputs.target_name }}
+      INPUT_FORCE: ${{ inputs.force_sync }}
+      INPUT_DRY_RUN: ${{ inputs.dry_run }}
+      ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
+      ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}
+      ALIYUN_USERNAME: ${{ secrets.ALIYUN_USERNAME }}
+      ALIYUN_PASSWORD: ${{ secrets.ALIYUN_PASSWORD }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.1
+          cache: true
+
+      - name: Install Skopeo
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends skopeo
+
+      - name: Build
+        run: |
+          mkdir -p bin
+          go build -trimpath -o bin/docker-syncer ./cmd/docker-syncer
+
+      - name: Authenticate and sync
+        run: ./scripts/ci-sync.sh

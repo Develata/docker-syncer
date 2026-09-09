@@ -1,57 +1,18 @@
-# =================================================================
-# 镜像列表 (Images List)
-# =================================================================
-# 每一行代表一个需要同步的镜像。
-# 格式: [参数] <镜像名> 或 <镜像名> [参数]
-#
-# ⚠️ 重要：参数使用规范
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 
-# ✅ 推荐格式：镜像名在前，参数在后
-#    mysql:8.0 --platform=linux/arm64
-#    nginx:alpine --disable-content-trust
-#
-# ✅ 也支持：参数在前，镜像名在后（已优化）
-#    --platform=linux/arm64 mysql:8.0
-#
-# 📝 支持的参数格式：
-#    --platform=linux/arm64        # 等号格式
-#    --platform linux/arm64         # 空格格式
-#    --disable-content-trust        # 无值布尔参数
-#
-# ⚡ 注意事项：
-#    1. 只有 --platform 参数会被解析并使用
-#    2. 其他参数会被自动过滤，不影响同步
-#    3. 每行只能写一个镜像
-#    4. 以 # 开头的行会被忽略
-#
-# =================================================================
-# 示例 (Examples)
-# =================================================================
+# 每行一个镜像；空行与整行注释会被忽略。
+# 仅支持 --platform 和 --target，可放在镜像前后，也可使用 =。
+# --target 必须是无斜杠的小写 repository:tag。
 
-# 1. 普通镜像 (默认同步 linux/amd64)
+# 默认平台来自 syncer.json（当前为 linux/amd64）
 nginx:alpine
-redis:latest
 
-# 2. 指定架构 - 推荐写法（参数在后）
-mysql:8.0 --platform=linux/arm64
-postgres:16 --platform=linux/arm64
+# 指定单个平台；linux/arm64 会规范化为 linux/arm64/v8
+mysql:8.0 --platform linux/arm64
 
-# 3. 指定架构 - 也支持（参数在前）
---platform=linux/arm64 alpine:3.19
---platform=linux/arm/v7 debian:bookworm-slim
+# 32 位 ARM 必须明确 v6 或 v7
+--platform=linux/arm/v7 arm32v7/alpine:latest
 
-# 4. 带命名空间的镜像
-bitnami/redis:7.2
-gitea/gitea:latest
+# 保留稳定的旧目标名称
+bitnami/redis:7.2 --target bitnami_redis:7.2
 
-# 5. 私有 Registry（带端口号）
-192.168.1.100:5000/my-app:latest
-harbor.example.com:8080/project/nginx:1.25
-
-# 6. 其他参数会被自动过滤（不影响同步）
-nginx:latest --disable-content-trust
-redis:alpine --pull-always
-
-# 7. 支持注释
-# python:3.9  <-- 这行会被忽略
+# 完整复制 manifest list/index，与 runner 架构无关
+registry.k8s.io/pause:3.10 --platform all

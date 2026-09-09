@@ -1,0 +1,8 @@
+version: 0.1
+log:
+  level: error
+storage:
+  filesystem:
+    rootdirectory: /tmp/docker-syncer-registry
+http:
+  addr: 127.0.0.1:5011
