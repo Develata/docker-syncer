@@ -1,0 +1,6 @@
+{
+  "mode": "double",
+  "platform": "linux/amd64",
+  "retries": 2,
+  "timeout": "10m"
+}

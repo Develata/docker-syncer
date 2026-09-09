@@ -1,10 +1,10 @@
-golang:latest
-openlistteam/openlist:latest
-easytier/easytier:latest
-ghcr.io/komari-monitor/komari-agent:latest
-mzz2017/v2raya:latest
-nginx:latest
-openresty/openresty:latest
-soulter/astrbot:latest
-calciumion/new-api:latest
-ghcr.io/sagernet/sing-box:latest
+golang:latest --target golang:latest
+openlistteam/openlist:latest --target openlistteam_openlist:latest
+easytier/easytier:latest --target easytier_easytier:latest
+ghcr.io/komari-monitor/komari-agent:latest --target ghcr-io_komari-monitor_komari-agent:latest
+mzz2017/v2raya:latest --target mzz2017_v2raya:latest
+nginx:latest --target nginx:latest
+openresty/openresty:latest --target openresty_openresty:latest
+soulter/astrbot:latest --target soulter_astrbot:latest
+calciumion/new-api:latest --target calciumion_new-api:latest
+ghcr.io/sagernet/sing-box:latest --target ghcr-io_sagernet_sing-box:latest

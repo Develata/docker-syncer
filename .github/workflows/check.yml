@@ -1,0 +1,109 @@
+name: Check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.1
+          cache: true
+
+      - name: Install verified shell tools
+        env:
+          TOOLS_DIR: ${{ runner.temp }}/docker-syncer-tools
+        run: |
+          set -euo pipefail
+          mkdir -p "$TOOLS_DIR"
+          cd "$TOOLS_DIR"
+
+          curl -fsSLO --retry 3 https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+          printf '%s  %s\n' '8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198' 'shellcheck-v0.11.0.linux.x86_64.tar.xz' | sha256sum --check --strict
+          tar -xJf shellcheck-v0.11.0.linux.x86_64.tar.xz
+          install -m 0755 shellcheck-v0.11.0/shellcheck "$TOOLS_DIR/shellcheck"
+
+          curl -fsSLO --retry 3 https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_linux_amd64
+          printf '%s  %s\n' '76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf' 'shfmt_v3.14.1_linux_amd64' | sha256sum --check --strict
+          install -m 0755 shfmt_v3.14.1_linux_amd64 "$TOOLS_DIR/shfmt"
+
+          curl -fsSLO --retry 3 https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          printf '%s  %s\n' '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' 'actionlint_1.7.12_linux_amd64.tar.gz' | sha256sum --check --strict
+          mkdir actionlint-bin
+          tar -xzf actionlint_1.7.12_linux_amd64.tar.gz -C actionlint-bin actionlint
+          install -m 0755 actionlint-bin/actionlint "$TOOLS_DIR/actionlint"
+          printf '%s\n' "$TOOLS_DIR" >>"$GITHUB_PATH"
+
+      - name: Format
+        run: test -z "$(gofmt -l .)"
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Race detector
+        run: go test -race ./...
+
+      - name: Shell and workflow lint
+        run: |
+          shellcheck scripts/*.sh
+          shfmt -d -i 2 -ci scripts/*.sh
+          actionlint
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.1
+          cache: true
+
+      - name: Install integration dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends skopeo docker-registry
+
+      - name: Integration test
+        env:
+          SYNCER_INTEGRATION_REGISTRY: localhost:5011
+          REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: ${{ runner.temp }}/registry-data
+        run: |
+          set -Eeuo pipefail
+          docker-registry serve internal/syncer/testdata/registry.yml >"${RUNNER_TEMP}/registry.log" 2>&1 &
+          registry_pid=$!
+          trap 'kill "$registry_pid" 2>/dev/null || true' EXIT
+          for _ in {1..20}; do
+            if curl --fail --silent http://localhost:5011/v2/ >/dev/null; then
+              go test -tags=integration ./internal/syncer
+              exit
+            fi
+            sleep 1
+          done
+          printf '%s\n' 'Disposable registry did not become ready.' >&2
+          exit 1

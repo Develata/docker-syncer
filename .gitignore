@@ -27,10 +27,11 @@ yarn-error.log*
 
 # 1. Go 语言相关 (如果你打算用 Go 重写)
 # 编译生成的二进制文件 (通常没有后缀，或者是 .exe)
-main
-main.exe
-docker-syncer
-docker-syncer.exe
+/main
+/main.exe
+/docker-syncer
+/docker-syncer.exe
+/bin/
 *.test
 *.out
 

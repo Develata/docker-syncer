@@ -1,181 +1,124 @@
-# 🐳 Docker Image Syncer (镜像搬运工)
+# Docker Image Syncer
 
-利用 GitHub Actions 的免费算力和高速网络，将 DockerHub 的镜像搬运到 **阿里云容器镜像服务 (ACR)** 或 **GitHub Packages (GHCR)**。
+使用 Go 与 Skopeo 在 Registry 之间直接复制 OCI/Docker 镜像；不拉取到 Docker daemon，也不依赖 Docker。源可以是 Skopeo `docker://` transport 可访问的任意 OCI Distribution Registry；配置内置阿里云 ACR、GHCR 或同时同步两端。
 
-**✨ 核心优势 (Pro版):**
+```text
+images.txt / CLI / JSON
+          │
+          ▼
+parse → normalize → plan → resolve immutable digest
+                              │
+                              ▼
+                           Skopeo ──→ Aliyun ACR
+                              └─────→ GHCR
+                                      │
+                                      ▼
+                                verify → report
+```
 
-1.  **多架构支持**：支持指定 `--platform` (如 `linux/arm64`)，完美适配树莓派、M1/M2 Mac 等设备。
-2.  **架构感知智能同步**：
-    *   **解决官方镜像误判**：脚本会精准比对**特定架构**的摘要 (Digest)，真正实现“内容不变则跳过”。
-    *   **双重校验机制**：不仅比对摘要 (Digest)，还会比对镜像创建时间 (Created)。防止因 Registry 压缩算法不同导致的死循环推送。
-3.  **极致空间优化**：
-    *   支持**磁盘清理开关**，防止 Runner 空间不足。
-    *   **即下即删**：推送完一个镜像立即清理，支持大批量同步。
-4.  **智能命名策略**：
-    *   自动处理命名空间冲突（如 `bitnami/nginx` -> `bitnami_nginx`）。
-    *   自动适配 GHCR 的小写命名要求。
+Go 程序是唯一同步语义所有者；Actions 和本地运行调用同一入口。双目标默认从源各复制一次，不引入临时 OCI 缓存或本地 layer store。
 
----
+## 快速使用
 
-![Last Sync](https://img.shields.io/badge/last%20sync-2026--09--01%2011:11:45-green)
-
-## ⚡ 快速开始 (Quick Start)
-
-1.  点击仓库右上角的 **[Use this template]** 按钮，选择 **Create a new repository**。
-2.  建议设为 **Public** (Public 仓库使用 GHCR 存储空间无限制，且拉取免鉴权)。
-3.  按照下方 [配置 Secrets](#%EF%B8%8F-%E9%85%8D%E7%BD%AE-secrets) 完成设置。
-4.  **修改配置**：根据需要修改 `config.env` 文件（设置同步模式等）。
-
----
-
-## 🛠️ 配置说明 (Configuration)
-
-### 1. Secrets 设置
-进入仓库的 **Settings** -> **Secrets and variables** -> **Actions** -> **New repository secret**：
-
-| Secret Name | 必填 | 说明 | 示例 |
-| --- | --- | --- | --- |
-| `ALIYUN_REGISTRY` | ✅ | 阿里云 ACR 公网地址 | `registry.cn-hangzhou.aliyuncs.com` |
-| `ALIYUN_NAMESPACE` | ✅ | 你的命名空间 | `develata` |
-| `ALIYUN_USERNAME` | ✅ | 阿里云登录账号 | `username@123.onaliyun.com` |
-| `ALIYUN_PASSWORD` | ✅ | 阿里云 **访问凭证密码** | `Mypassword123` |
-| `DOCKERHUB_USERNAME` | ❌ | DockerHub 用户名 (防限流) | `myuser` |
-| `DOCKERHUB_TOKEN` | ❌ | DockerHub Token (推荐) | `dckr_pat_xxx` |
-| `WEBHOOK_URL` | ❌ | 消息通知 Webhook | `https://open.feishu.cn/...` |
-
-### 2. 配置文件 (`config.env`)
-项目根目录下的 `config.env` 控制全局行为：
+本地 CLI 需要 Go 1.23+ 与 Skopeo：
 
 ```bash
-# 同步模式: aliyun, ghcr, double, none
-SYNC_MODE=aliyun
+go build -o bin/docker-syncer ./cmd/docker-syncer
 
-# 磁盘清理: true (默认) / false
-# 开启可释放约 2GB 空间，但会增加 2-4 分钟运行时间
-CLEAN_DISK_SPACE=true
+# 离线检查解析、命名和 GHCR 计划；不会登录或访问 Registry
+GHCR_NAMESPACE=your-github-owner ./bin/docker-syncer sync \
+  --config syncer.json --mode ghcr --file images.txt --dry-run=true
 ```
 
-### 3. Webhook 配置指南
-以**飞书 (Feishu)** 为例：
-1.  在飞书群组中添加“自定义机器人”。
-2.  **不需要**在飞书设置特定的“关键字”或“IP白名单”（如果脚本报错，检查是否被拦截，通常只需获取 URL）。
-3.  复制 Webhook URL (格式如 `https://open.feishu.cn/open-apis/bot/v2/hook/xxx`)。
-4.  填入 GitHub Secrets 的 `WEBHOOK_URL` 中。
-*本程序已内置 JSON 消息格式，无需用户在飞书端配置消息模板。*
+Windows 建议在 WSL2 中安装并运行 Skopeo，无需 Docker Desktop。
 
----
+## 配置与优先级
 
-## 🚀 工作流选择 Guide
+`syncer.json` 是严格 JSON：未知字段、重复字段、`null` 和无效值都会报错。
 
-本项目包含 **3 类** 工作流，请根据需求选择：
+```json
+{
+  "mode": "double",
+  "platform": "linux/amd64",
+  "retries": 2,
+  "timeout": "10m"
+}
+```
 
-### 1. 自动批量同步 (`01. Batch Sync`)
-*   **适用场景**：日常大批量同步，无人值守。
-*   **触发方式**：
-    *   修改 `images.txt` 推送。
-    *   定时触发 (Schedule)。
-    *   手动触发 (Workflow Dispatch)。
-*   **配置**：
-    *   **镜像列表**：读取根目录 `images.txt`。
-    *   **同步目标**：完全由 `config.env` 中的 `SYNC_MODE` 决定。
-    *   **磁盘清理**：由 `config.env` 中的 `CLEAN_DISK_SPACE` 决定。
+优先级为 **CLI 显式参数 > 非空环境变量 > JSON > 默认值**。环境变量：
 
-**`images.txt` 示例** (更多详见 `images.example.txt`)：
+- `SYNC_MODE`：`aliyun`、`ghcr`、`double` 或 `none`；`none` 只规划，不发布。
+- `SYNC_PLATFORM`：`os/arch[/variant]` 或 `all`。
+- `ALIYUN_REGISTRY`、`ALIYUN_NAMESPACE`。
+- `GHCR_NAMESPACE`；未设置时使用小写的 `GITHUB_REPOSITORY_OWNER`。
+- `SYNC_RETRIES`、`SYNC_TIMEOUT`。
+
+`images.txt` 每行一个源镜像，可附加 `--platform` 与 `--target`，详见 `images.example.txt`。`linux/arm64` 规范化为 `linux/arm64/v8`；`linux/arm` 必须明确 `/v6` 或 `/v7`。
+
+未写 `--target` 时，目标名是源镜像规范化全引用的 slug（最长 50 字符）、`--`、12 位哈希与源 tag。哈希输入精确为：
+
 ```text
-nginx:alpine
---platform=linux/arm64 mysql:8.0
-bitnami/redis:latest
+<canonical full reference>\n<normalized platform>
 ```
 
-**⚠️ 重要：参数使用规范**
-1. **推荐格式**：参数写在镜像名**后面**
-   ```text
-   # ✅ 推荐 - 镜像名在前，参数在后
-   mysql:8.0 --platform=linux/arm64
-   nginx:alpine --disable-content-trust
-   redis:7.2 --platform=linux/arm64 --pull-always
-   ```
+因此平台稳定参与命名，且不同 registry/namespace 不会再依赖易碰撞的全局“路径压平”算法。显式 `--target repository:tag` 不允许斜杠，可用于保留旧名称；同一批计划若把不同源或平台指向同一目标会在任何网络 I/O 前失败。仓库自带的 `images.txt` 已为原有 10 个镜像逐项声明旧目标名，迁移不会静默改名。
 
-2. **支持格式**：参数也可以写在镜像名**前面**（已优化支持）
-   ```text
-   # ✅ 支持 - 参数在前（但不推荐）
-   --platform=linux/arm64 mysql:8.0
-   --disable-content-trust nginx:alpine
-   ```
+## 一致性语义
 
-3. **参数格式类型**：
-   - **带值参数**（等号格式）：`--platform=linux/arm64`
-   - **带值参数**（空格格式）：`--platform linux/arm64`
-   - **无值参数**（布尔标志）：`--disable-content-trust` `--pull-always` `--no-cache`
+- **单平台**：读取所选 descriptor 对应 child manifest 的 raw bytes，计算 SHA-256；复制时使用固定的 `source@sha256:...` 和 `--preserve-digests`。
+- **`platform=all`**：对 raw manifest list/index 计算 SHA-256，固定该 index digest，并使用 `--all --preserve-digests`；结果不取决于 runner 架构。
+- 发布后重新读取目标 raw manifest 并校验哈希；目标验证失败即整个命令非零退出。
+- `Created` 字段只是元数据，永不作为镜像身份或“相同”的依据。
 
-4. **不支持的写法**：
-   ```text
-   # ❌ 错误 - 多个镜像写在一行
-   nginx:alpine redis:7.2
-   
-   # ❌ 错误 - 参数值包含空格但未加引号
-   --label description=my app
-   ```
+`--force=true` 跳过发布前的目标一致性检查，但不跳过复制后的验证。任一条目或任一目标失败，命令最终非零退出；详细结果写入 `--summary` 指定的 Markdown。
 
-5. **最佳实践**：
-   - 每行只写一个镜像
-   - 镜像名始终在前，参数在后
-   - 仅使用脚本明确支持的参数（主要是 `--platform`）
-   - 其他 docker 参数（如 `--disable-content-trust`）会被自动过滤，不影响同步
+当前有意只接受 SHA-256 digest，并顺序处理镜像以保持日志稳定、控制 Registry 压力与内存。若目标 Registry 不能在 `--preserve-digests` 下保存原 manifest，任务会显式失败而不会把“近似相同”报告为成功；单平台遇到嵌套 index 也会要求改用 `all`，而非猜测平台。
 
-### 2. 双重同步 (`02. Double Sync`)
-*   **适用场景**：临时手动同步一个镜像，同时推送到 阿里云 和 GHCR。
-*   **特点**：三方比对（源 vs 阿里 vs GHCR），智能判断哪一方需要更新。
-*   **手动参数**：
-    *   `image_name`: 原镜像名。
-    *   `target_name`: (可选) 重命名。
-    *   `clean_disk`: 是否清理磁盘 (默认 False 以节省时间)。
+## Dry run
 
-### 3. 单项同步 (`03. To Aliyun` / `04. To GHCR`)
-*   **适用场景**：只推送到某一个特定的仓库。
-*   **特点**：**不读取** `images.txt`，仅处理本次输入的镜像。
-*   **独立性**：你可以用它来临时搬运一个不在列表里的镜像。
-
----
-
-## ❓ 常见问题 (FAQ)
-
-### Q1: 关于磁盘清理 (Disk Space)
-**现象**：Workflow 开头经常要跑几分钟 "Maximize Build Space"。
-**解释**：GitHub Runner 默认磁盘空间有限（约 14GB 可用）。如果同步大镜像（如 PyTorch, TensorFlow），很容易爆盘。脚本会预先移除 .NET, Android 等组件释放空间。
-**调整**：
-*   如果只是同步 nginx 这种小镜像，可以在 `config.env` 把 `CLEAN_DISK_SPACE` 设为 `false`。
-*   手动同步时，取消勾选 `clean_disk` 选项。
-
-### Q2: 关于架构指定 (/v8 问题)
-**问**：镜像名是 `linux/arm64/v8`，我该怎么写？
-**答**：只需要写 `--platform=linux/arm64` 即可。Docker 引擎会自动协商最匹配的变体 (Variant)。不需要显式写 `/v8`，否则可能会报错。
-
-### Q3: 为什么有些参数被忽略了？
-**问**：我在 `images.txt` 中写了 `nginx:latest --disable-content-trust`，但参数好像没生效？
-**答**：这是正常的。脚本会自动**过滤掉所有参数**，只提取镜像名。目前只有 `--platform` 参数会被解析和使用。其他参数（如 `--disable-content-trust`）会被安全地移除，不会影响同步过程。
-
-### Q4: images.txt 中参数的正确写法
-**最佳实践**：
-```text
-# ✅ 推荐 - 镜像名在前
-mysql:8.0 --platform=linux/arm64
-nginx:alpine
-
-# ✅ 也支持 - 参数在前（已优化）
---platform=linux/arm64 mysql:8.0
-
-# ❌ 避免 - 复杂的参数组合
-mysql:8.0 --platform linux/arm64 --pull-always --no-cache
+```bash
+./bin/docker-syncer sync --config syncer.json --file images.txt --dry-run=true
 ```
-**说明**：虽然脚本已优化支持参数在前后的各种情况，但为了提高可读性，建议统一使用"镜像名在前，参数在后"的格式。
 
-### Q5: 为什么 GHCR 403 Forbidden?
-1.  确保在 GitHub 个人设置 -> Developer Settings 开启了 `write:packages` 权限（如果是用 Token）。
-2.  本 Actions 默认使用 `${{ secrets.GITHUB_TOKEN }}`，请检查仓库 Settings -> Actions -> General -> **Workflow permissions** 必须设为 **Read and write permissions**。
+Dry run **仅做离线解析、规范化、碰撞检查与计划输出**：不读取 Registry、不登录、不验证凭据、不复制。它不能证明网络、凭据或 Registry 权限有效。
 
----
+## 认证
 
-## 📜 License
+程序默认接收一个明确的 Skopeo authfile，不隐式回退到 Docker/containers 的全局凭据。建议每次运行创建隔离文件：
 
-MIT License.
+```bash
+authfile=$(mktemp)
+chmod 600 "$authfile"
+trap 'rm -f "$authfile"' EXIT
+printf '{}\n' >"$authfile"
+printf '%s' "$GHCR_TOKEN" | skopeo login \
+  --authfile "$authfile" --username "$GHCR_USER" \
+  --password-stdin ghcr.io
+GHCR_NAMESPACE=your-github-owner ./bin/docker-syncer sync \
+  --config syncer.json --mode ghcr --file images.txt --authfile "$authfile"
+```
+
+GitHub Actions 保留以下 Secrets：
+
+| Secret | 用途 |
+|---|---|
+| `ALIYUN_REGISTRY` / `ALIYUN_NAMESPACE` | ACR 目标 |
+| `ALIYUN_USERNAME` / `ALIYUN_PASSWORD` | ACR 登录 |
+| `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` | 可选 Docker Hub 源登录 |
+| `GITHUB_TOKEN` | GHCR 源/目标登录（Actions 自动提供） |
+| `WEBHOOK_URL` | 可选飞书文本通知 |
+
+`scripts/ci-sync.sh` 只负责建立权限为 0600 的临时 authfile、按解析后的 mode 登录、原样转发输入和发送有超时的通知；业务判断全部由 Go CLI 完成。认证错误不会输出 Registry stderr，通知失败只产生 warning，且不会掩盖同步退出码。
+
+## GitHub Actions
+
+- `Sync images`：在每月 1、11、21 日 UTC 00:00 定时运行；`main` 的 `images.txt`/`syncer.json` 变化也会触发。手动运行时 `image_name` 留空即批量；可覆盖 `mode`、`platform`、`target_name`、`force_sync`、`dry_run`。
+- `Check`：PR 与 `main` push 上执行 fmt、test、vet、race、Shell/workflow lint，以及使用 Skopeo 和本地 registry 包的 integration tests；不读取 Secrets。
+- 发布工作流只有 `packages: write`，全局默认仅 `contents: read`；checkout 不持久化凭据。发布并发跨触发源串行，运行中的发布不会被取消。
+- Dependabot 每月检查 GitHub Actions 与 Go modules。
+
+旧的四个工作流已合并；`clean_disk` 与 `new_name` 输入、`config.env`、Dockerfile/Compose 和两套重复本地脚本均已删除。兼容的重命名入口为 `target_name`；批量列表使用 `--target`。
+
+## License
+
+MIT License。
